@@ -1,0 +1,11 @@
+# Packages the day-trader app imports. After everything works on your machine, run
+#   pip freeze > requirements.txt
+# once to pin the exact versions you tested with.
+yfinance
+pandas
+pydantic
+python-dotenv
+langgraph
+langchain-google-genai
+supabase
+streamlit
