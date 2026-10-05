@@ -6,13 +6,13 @@ Scheduler: runs the morning trading job and the end-of-day settlement job on eve
     python scheduler.py --now morning   run the morning job once, right now, then exit
     python scheduler.py --now settle    run the settlement job once, right now, then exit
 
-It starts each job as a separate program (toy24.py and settle_day.py), so a crash in a job can never stop
+It starts each job as a separate program (morning_run.py and settle_day.py), so a crash in a job can never stop
 the scheduler, and neither job needs to know anything about scheduling. Weekends are skipped here; market
 holidays are handled by the jobs themselves (the morning job's preflight stops, settlement finds no run).
 
 Settings (all optional, in .env or the environment):
     MORNING_TIME=09:35   SETTLE_TIME=15:40   (India time, 24-hour clock)
-    MORNING_SCRIPT=toy24.py   SETTLE_SCRIPT=settle_day.py
+    MORNING_SCRIPT=morning_run.py   SETTLE_SCRIPT=settle_day.py
 """
 import argparse
 import logging
@@ -51,7 +51,7 @@ class Job:
 
 def load_jobs() -> list[Job]:
     return [
-        Job("morning", os.getenv("MORNING_SCRIPT", "toy24.py"), parse_clock(os.getenv("MORNING_TIME", "09:35")),
+        Job("morning", os.getenv("MORNING_SCRIPT", "morning_run.py"), parse_clock(os.getenv("MORNING_TIME", "09:35")),
             timeout_minutes=20, attempts=2, retry_wait_minutes=5),
         Job("settle", os.getenv("SETTLE_SCRIPT", "settle_day.py"), parse_clock(os.getenv("SETTLE_TIME", "15:40")),
             timeout_minutes=15, attempts=3, retry_wait_minutes=10),     # safe to repeat: settlement skips finished work
