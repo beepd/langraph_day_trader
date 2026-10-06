@@ -68,6 +68,8 @@ def plans(accepted: list, rejected: list, skipped: list, balance: float) -> str:
     for p in accepted:
         lines.append(f"🟢 <b>{esc(p['symbol'])}</b>: buy {p['shares']} @ {p['entry']:.2f}")
         lines.append(f"    stop {p['stop']:.2f} · target {p['target']:.2f} · risk {money(p['max_loss'])} / reward {money(p['max_gain'])}")
+        if p.get("nudges"):
+            lines.append("    ✎ adjusted by the rulebook to fit the limits")
     for symbol, reason in rejected:
         lines.append(f"✖ <b>{esc(symbol)}</b> rejected: {esc(_short(reason, 90))}")
     if skipped:

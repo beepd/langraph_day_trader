@@ -1,3 +1,8 @@
+"""
+Morning run: preflight (is the market open? what is the balance?) -> screener -> news -> analyst -> trade planner,
+with every step saved to Supabase and announced on Telegram. Started by scheduler.py on weekday mornings.
+Run it by hand with:  python morning_run.py     (set FORCE_RUN=1 in .env to test outside market hours)
+"""
 import csv
 import os
 import time
@@ -15,7 +20,7 @@ from langgraph.graph import StateGraph, START, END
 from pydantic import BaseModel, Field
 
 from rules import (
-    size_trade, STARTING_BALANCE, RISK_PER_TRADE, MAX_POSITION_FRACTION,
+    size_trade, nudge_plan, STARTING_BALANCE, RISK_PER_TRADE, MAX_POSITION_FRACTION,
     MIN_REWARD_RISK, MIN_STOP_RANGE_FRACTION, MAX_TARGET_RANGE_FRACTION,
 )
 from storage import start_run, save_run_details, mark_run, get_available_balance
@@ -36,6 +41,8 @@ MIN_CHANGE = 0.5          # a stock must be up at least this % from yesterday's 
 MIN_REL_VOLUME = 1.0      # and trade at least this multiple of its normal volume pace
 MAX_CANDIDATES = 10       # how many movers go on to the news step
 MAX_POSITIONS = 3         # buy at most this many stocks a day
+STOP_ASK_FRACTION = 0.40  # we ASK the model for a stop at least this fraction of the daily range away. The rulebook
+                          # (MIN_STOP_RANGE_FRACTION in rules.py, 0.33) enforces less, so near-misses don't cost trades
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Market-closed guard (the app only starts a run inside this window, on a trading day)
@@ -389,7 +396,7 @@ Why it is on the watchlist ({verdict.strength}): {verdict.reason}
 
 Suggest a stop-loss and a target.
 Rules:
-- The stop-loss goes below {entry:.2f}, at least about a third of the typical daily range away, so normal wobble does not trigger it.
+- The stop-loss goes below {entry:.2f} by at least {STOP_ASK_FRACTION * avg_range:.2f} rupees ({STOP_ASK_FRACTION:.0%} of the typical daily range), so normal wobble does not trigger it.
 - The target goes above {entry:.2f}, no more than about one typical daily range away.
 - The target must be at least 1.7 times as far above the buy price as the stop-loss is below it.
 - Explain in one plain sentence."""
@@ -405,20 +412,25 @@ Rules:
         reason = plan.reason.split("\n")[0][:200]
         say(f"   model's reason: {reason}")
 
+        stop, target, nudges = nudge_plan(entry, stop, target, avg_range)       # a plan just outside the limits is moved inside
+        for note in nudges:
+            say(f"   rulebook adjusted the plan: {note}")
+        logged_reason = (f"[adjusted by the rulebook: {'; '.join(nudges)}] " if nudges else "") + reason
+
         result = size_trade(balance, entry, stop, target, avg_range)
         if not result["ok"]:
             say(f"   rulebook says NO: {result['reason']}")
             plan_log.append({"symbol": symbol, "status": "rejected", "rejection_reason": result["reason"],
-                             "entry": entry, "stop": stop, "target": target, "gemini_reason": reason})
+                             "entry": entry, "stop": stop, "target": target, "gemini_reason": logged_reason})
             continue
         say(f"   rulebook says YES: buy {result['shares']} shares, cost {result['cost']:,.0f} "
             f"({result['cost'] / balance:.0%} of balance)")
         say(f"   if the stop hits you lose about {result['max_loss']:,.0f}; if the target hits you gain about {result['max_gain']:,.0f} "
             f"(reward/risk {result['reward_risk']:.2f})")
-        plans.append({"symbol": symbol, "entry": entry, "stop": stop, "target": target, "reason": reason, **result})
+        plans.append({"symbol": symbol, "entry": entry, "stop": stop, "target": target, "reason": reason, "nudges": nudges, **result})
         plan_log.append({"symbol": symbol, "status": "accepted", "entry": entry, "stop": stop, "target": target,
                          "shares": result["shares"], "cost": result["cost"], "max_loss": result["max_loss"],
-                         "max_gain": result["max_gain"], "gemini_reason": reason})
+                         "max_gain": result["max_gain"], "gemini_reason": logged_reason})
     rejected = [(p["symbol"], p["rejection_reason"]) for p in plan_log if p["status"] == "rejected"]
     skipped = [p["symbol"] for p in plan_log if p["status"] == "skipped"]
     send_telegram(msg.plans(plans, rejected, skipped, balance))
