@@ -9,3 +9,4 @@ langgraph
 langchain-google-genai
 supabase
 streamlit
+langchain-openai
