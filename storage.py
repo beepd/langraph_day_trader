@@ -102,3 +102,37 @@ def save_run_details(run_id: int, result: dict, settings: dict) -> None:
     except Exception as error:
         mark_run(run_id, "failed", error=str(error))
         raise
+
+
+def get_candidates(run_id: int) -> list:
+    """The stocks the screener passed for a run (symbol, price, avg_range, rank), best first."""
+    return (get_client().table("candidates").select("symbol, price, avg_range, rank")
+            .eq("run_id", run_id).order("rank").execute().data)
+
+
+def save_candidate_outcomes(run_id: int, reports: dict) -> int:
+    """Save (or replace) the report-card rows of a run. reports = {symbol: report}. Returns how many rows were saved."""
+    if not reports:
+        return 0
+
+    def as_text(value):                        # a time becomes ISO text, so it can travel as JSON
+        return value.isoformat() if hasattr(value, "isoformat") else value
+
+    rows = [{
+        "run_id": run_id, "symbol": symbol,
+        "entry_price": r.get("entry_price"), "close_price": r["close_price"],
+        "return_pct": r["return_pct"], "max_up_pct": r["max_up_pct"], "max_down_pct": r["max_down_pct"],
+        "candles_used": r["candles_used"],
+        "std_stop": r["std_stop"], "std_target": r["std_target"], "std_outcome": r["std_outcome"],
+        "std_exit_price": r["std_exit_price"], "std_exit_time": as_text(r["std_exit_time"]),
+        "std_return_pct": r["std_return_pct"],
+    } for symbol, r in reports.items()]
+    get_client().table("candidate_outcomes").upsert(rows, on_conflict="run_id,symbol").execute()
+    return len(rows)
+
+
+def get_watchlist_symbols(run_id: int) -> set:
+    """The stocks the analyst put on the watchlist in a run."""
+    rows = (get_client().table("verdicts").select("symbol").eq("run_id", run_id)
+            .eq("on_watchlist", True).execute().data)
+    return {row["symbol"] for row in rows}

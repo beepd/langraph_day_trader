@@ -95,8 +95,18 @@ def run_complete(accepted: list, balance: float, run_id, save_error) -> str:
 
 
 # ---- end-of-day settlement -------------------------------------------------------------------
+def report_card(summary: dict):
+    """One line comparing the strong-catalyst stocks with the other candidates (or None if there is nothing to compare)."""
+    parts = []
+    if summary["watchlist_n"]:
+        parts.append(f"strong-catalyst stocks {summary['watchlist_avg']:+.2f}% ({summary['watchlist_n']})")
+    if summary["others_n"]:
+        parts.append(f"the other candidates {summary['others_avg']:+.2f}% ({summary['others_n']})")
+    return ("🧾 Report card, average return to the close: " + " vs ".join(parts)) if parts else None
+
+
 def settlement(market_date, rows: list, total: float, start: float, end: float,
-               benchmark_pct=None, capital_used=None) -> str:
+               benchmark_pct=None, capital_used=None, report_line=None) -> str:
     """rows = list of (symbol, outcome, pnl)."""
     lines = [f"📈 <b>Day settled</b> {market_date}"]
     for symbol, outcome, pnl in rows:
@@ -111,6 +121,8 @@ def settlement(market_date, rows: list, total: float, start: float, end: float,
         extras.append(f"Nifty over the same window {benchmark_pct:+.2f}%")
     if extras:
         lines.append(" · ".join(extras))
+    if report_line:
+        lines.append(report_line)
     return "\n".join(lines)
 
 

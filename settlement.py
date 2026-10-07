@@ -1,3 +1,4 @@
+import math
 from datetime import time as dtime
 from datetime import timedelta
 
@@ -48,3 +49,73 @@ def benchmark_move(history, started_at):
     if at_start is None or at_end is None or at_start <= 0:
         return None
     return (at_end / at_start - 1) * 100
+
+
+def _floor_tick(price):
+    """Round a price DOWN to NSE's 0.05 steps."""
+    return round(math.floor(round(price / 0.05, 6)) * 0.05, 2)
+
+
+def candidate_outcome(entry, avg_range, candles, stop_fraction=0.40, target_fraction=1.0):
+    """
+    How a stock did from the moment of the run until the close, whether or not we bought it.
+
+    candles = list of (time, high, low, close), in time order, starting after the run began
+              (exactly what candles_after() returns).
+    It reports three simple facts (return to the close, the highest and the lowest point reached) and
+    one "what if" trade with a FIXED rule, so every stock can be compared on equal terms:
+    stop = stop_fraction of the daily range below the buy price, target = target_fraction of the range above,
+    both rounded to price steps, judged with the same settle() rule as the real trades.
+    Returns None if there are no candles.
+    """
+    if not candles or entry <= 0:
+        return None
+    highs = [c[1] for c in candles]
+    lows = [c[2] for c in candles]
+    close = candles[-1][3]
+    result = {
+        "close_price": round(close, 2),
+        "return_pct": round((close / entry - 1) * 100, 4),
+        "max_up_pct": round((max(highs) / entry - 1) * 100, 4),
+        "max_down_pct": round((min(lows) / entry - 1) * 100, 4),
+        "candles_used": len(candles),
+        "std_stop": None, "std_target": None, "std_outcome": None,
+        "std_exit_price": None, "std_exit_time": None, "std_return_pct": None,
+    }
+    stop = _floor_tick(entry - stop_fraction * avg_range)
+    target = _floor_tick(entry + target_fraction * avg_range)
+    if stop < entry < target:                                  # tiny ranges can round to nothing: then no "what if" trade
+        trade = settle(entry, stop, target, 1, candles)
+        result.update(
+            std_stop=stop, std_target=target, std_outcome=trade["outcome"],
+            std_exit_price=trade["exit_price"], std_exit_time=trade["exit_time"],
+            std_return_pct=round((trade["exit_price"] / entry - 1) * 100, 4),
+        )
+    return result
+
+
+def outcomes_for_candidates(candidates, candles_by_symbol):
+    """
+    candidates: rows from the candidates table, each with symbol, price and avg_range.
+    candles_by_symbol: {symbol: list of (time, high, low, close)}, as returned by candles_after().
+    Returns {symbol: report}: candidate_outcome()'s report plus entry_price.
+    A candidate with no candles, or without a price or range, is left out; the caller can see who is missing.
+    """
+    reports = {}
+    for row in candidates:
+        price, avg_range = row.get("price"), row.get("avg_range")
+        if price is None or avg_range is None:
+            continue
+        report = candidate_outcome(float(price), float(avg_range), candles_by_symbol.get(row["symbol"]) or [])
+        if report is not None:
+            report["entry_price"] = round(float(price), 2)
+            reports[row["symbol"]] = report
+    return reports
+
+
+def group_summary(reports, watchlist_symbols):
+    """Average return to the close of the stocks on the watchlist versus the other candidates."""
+    on = [r["return_pct"] for symbol, r in reports.items() if symbol in watchlist_symbols]
+    off = [r["return_pct"] for symbol, r in reports.items() if symbol not in watchlist_symbols]
+    average = lambda values: sum(values) / len(values) if values else None
+    return {"watchlist_avg": average(on), "watchlist_n": len(on), "others_avg": average(off), "others_n": len(off)}

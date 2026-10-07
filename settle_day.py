@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 import messages as msg
 from notify import send_telegram
 from rules import STARTING_BALANCE
-from settlement import benchmark_move, candles_after, settle
-from storage import get_client
+from settlement import (benchmark_move, candles_after, group_summary, outcomes_for_candidates, settle)
+from storage import get_candidates, get_client, get_watchlist_symbols, save_candidate_outcomes
 
 load_dotenv()
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -40,6 +40,32 @@ def nifty_benchmark(started_at: datetime, market_date: date):
     except Exception as error:
         print(f"   (could not work out the Nifty benchmark: {error})")
         return None
+
+
+def record_report_card(run_id: int, market_date: date, started_at: datetime, period: str = "5d"):
+    """
+    Grade EVERY candidate of the run, not only the stocks we bought: fetch their 5-minute candles, work out how each
+    did until the close, save it, and return a one-line summary for Telegram (or None).
+    """
+    candidates = get_candidates(run_id)
+    if not candidates:
+        print("Report card: this run has no candidates.")
+        return None
+    symbols = [c["symbol"] for c in candidates]
+    data = yf.download([s + ".NS" for s in symbols], period=period, interval="5m",
+                       group_by="ticker", auto_adjust=False, progress=False)
+    available = set(data.columns.get_level_values(0)) if not data.empty else set()
+    start = next_candle_start(started_at)
+    candles_by_symbol = {}
+    for symbol in symbols:
+        if symbol + ".NS" in available:
+            frame = data[symbol + ".NS"].dropna(subset=["Close"])
+            candles_by_symbol[symbol] = candles_after(frame[frame.index.date == market_date], start)
+    reports = outcomes_for_candidates(candidates, candles_by_symbol)
+    saved = save_candidate_outcomes(run_id, reports)
+    missing = [s for s in symbols if s not in reports]
+    print(f"Report card: saved {saved} of {len(symbols)} candidates" + (f" (no data for: {', '.join(missing)})" if missing else ""))
+    return msg.report_card(group_summary(reports, get_watchlist_symbols(run_id)))
 
 
 def main() -> None:
@@ -128,9 +154,14 @@ def main() -> None:
     print(f"Balance: {start_balance:,.2f} -> {row['ending_balance']:,.2f}  (saved to daily_equity)")
     print(f"Money used: {capital_used:,.0f}; Nifty over the same window: "
           f"{'unknown' if benchmark is None else f'{benchmark:+.2f}%'}")
+    report_line = None
+    try:                                  # the balance is already saved: a problem here must never undo or block it
+        report_line = record_report_card(run["id"], market_date, started_at)
+    except Exception as error:
+        print(f"   (could not record the report card: {error})")
     symbol_of = {p["id"]: p["symbol"] for p in plans}
     rows = [(symbol_of.get(r["plan_id"], "?"), r["outcome"], float(r["pnl"])) for r in results]
-    send_telegram(msg.settlement(market_date, rows, total, start_balance, row["ending_balance"], benchmark, capital_used))
+    send_telegram(msg.settlement(market_date, rows, total, start_balance, row["ending_balance"], benchmark, capital_used, report_line))
 
 
 if __name__ == "__main__":
