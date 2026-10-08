@@ -1,5 +1,5 @@
 """Tests the experiment script with stand-in internet (no network). Run:  python test_experiment_articles.py"""
-import os, sys, tempfile
+import datetime, os, sys, tempfile
 sys.path.insert(0, ".")
 import experiment_articles as E
 
@@ -116,6 +116,48 @@ check("summary shows readable AND names the company: 1 of 2", "readable AND name
 with tempfile.TemporaryDirectory() as d:
     header = open(E.save_csv(rows6, os.path.join(d, "r6.csv")), encoding="utf-8").readline()
 check("CSV has a mentions column", ",mentions," in header, header.strip())
+
+print("== 7. check 2: how old is the article? ==")
+D = datetime.date
+today = D(2026, 10, 8)
+check("2 days old", E.age_in_days(D(2026, 10, 6), today) == 2)
+check("published today is 0", E.age_in_days(today, today) == 0)
+check("30 days old", E.age_in_days(D(2026, 9, 8), today) == 30)
+check("tomorrow (time-zone slack) is treated as 0", E.age_in_days(D(2026, 10, 9), today) == 0)
+check("2 days in the future is not trusted (None)", E.age_in_days(D(2026, 10, 10), today) is None)
+check("no date gives None", E.age_in_days(None, today) is None)
+page_meta = b'<html><head><meta property="article:published_time" content="2026-10-07T03:37:00+05:30"><title>x</title></head><body><p>Hello</p></body></html>'
+page_json = b'<html><head><script type="application/ld+json">{"@type":"NewsArticle","datePublished":"2026-10-06T10:00:00Z"}</script></head><body><p>hi</p></body></html>'
+check("date read from a meta tag", E.article_date(page_meta) == D(2026, 10, 7), f"{E.article_date(page_meta)}")
+check("date read from JSON-LD", E.article_date(page_json) == D(2026, 10, 6), f"{E.article_date(page_json)}")
+check("page without a date gives None", E.article_date(b"<html><body><p>no date here</p></body></html>") is None)
+check("garbage bytes give None, no crash", E.article_date(b"\xff\xfe\x00 not html") is None)
+check("empty page gives None", E.article_date(b"") is None)
+
+print("== 8. check 2 inside the whole experiment ==")
+bodies = {"L1": b"<fresh-named>", "L2": b"<stale-named>", "L3": b"<nodate-named>", "L4": b"<fresh-offtopic>"}
+dates8 = {b"<fresh-named>": D(2026, 10, 7), b"<stale-named>": D(2026, 9, 28), b"<nodate-named>": None, b"<fresh-offtopic>": D(2026, 10, 6)}
+named_text = "Power Finance Corporation reported strong results. " + filler
+deps8 = {"items": {"google": lambda company, n: [{"title": k, "link": k} for k in bodies], "bing": lambda c, n: []},
+         "resolve": {"google": lambda link: (f"https://site-{link}.example/s", ""), "bing": E.bing_real_url},
+         "robots": E.Robots(fetch=lambda url: (404, b"", "", "HTTP 404")),
+         "fetch": lambda url: (200, bodies[url.split("site-")[1].split(".")[0]], "text/html", ""),
+         "extract": lambda body: ("Sector wrap. " + filler) if body == b"<fresh-offtopic>" else named_text,
+         "date_of": lambda body: dates8[body], "today": lambda: today, "sleep": lambda s: None, "pause": 0}
+rows8 = E.run_experiment(["PFC"], {"PFC": "Power Finance Corporation Ltd."}, ["google"], 4, deps8)
+ages = {r["title"]: r["age_days"] for r in rows8}
+check("ages: 1, 10, None, 2 days", ages == {"L1": 1, "L2": 10, "L3": None, "L4": 2}, f"{ages}")
+check("fresh = L1 and L4", sorted(r["title"] for r in rows8 if E.is_fresh(r)) == ["L1", "L4"])
+check("usable = only L1 (fresh AND names the company)", [r["title"] for r in rows8 if E.is_usable(r)] == ["L1"])
+buf8 = io.StringIO()
+with contextlib.redirect_stdout(buf8): E.summarize(rows8, ["PFC"], ["google"])
+out8 = buf8.getvalue()
+check("summary: fresh 2 (50%)", "readable AND fresh (<= 3 days old):      2 (50%)" in out8)
+check("summary: 1 page with no readable date", "no readable date on the page: 1)" in out8)
+check("summary: usable 1 (25%)", "USABLE = readable + names it + fresh: 1 (25%)" in out8)
+with tempfile.TemporaryDirectory() as d:
+    lines8 = open(E.save_csv(rows8, os.path.join(d, "r8.csv")), encoding="utf-8").read().splitlines()
+check("CSV has an age_days column", ",age_days," in lines8[0], lines8[0])
 
 print("\nALL CHECKS PASSED" if not failures else f"\n{len(failures)} CHECK(S) FAILED: {failures}")
 sys.exit(1 if failures else 0)

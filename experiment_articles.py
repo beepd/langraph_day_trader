@@ -15,6 +15,7 @@ Run it on your laptop AND on the VM: results can differ, and the VM is where the
 """
 import argparse
 import csv
+import datetime
 import re
 import statistics
 import sys
@@ -29,6 +30,7 @@ from collections import Counter, defaultdict
 
 USER_AGENT = "day-trader-research/0.1 (personal learning project; one request per page)"
 DEFAULT_SYMBOLS = ["PFC", "BAJFINANCE", "VEDL", "TRENT", "KOTAKBANK", "GODREJCP", "ABB", "ADANIGREEN", "HINDUNILVR", "RELIANCE"]
+FRESH_DAYS = 3                   # an article this many days old or newer counts as fresh (the same window as Google's when:3d)
 MIN_READABLE_CHARS = 500          # less than this and we do not call it an article (a paywall or a blocked page)
 PAGE_TIMEOUT = 15
 MAX_PAGE_BYTES = 2_000_000
@@ -173,11 +175,39 @@ def count_company_mentions(symbol: str, company: str, text: str) -> int:
     return len(re.findall(pattern, text.lower()))
 
 
+def article_date(body: bytes):
+    """The publish date (a datetime.date) read from the page's own metadata, or None if there is no date we can read."""
+    try:
+        import trafilatura
+        found = trafilatura.extract_metadata(body.decode("utf-8", "replace")).date
+        return datetime.date.fromisoformat(found) if found else None
+    except Exception:
+        return None
+
+
+def age_in_days(published, today):
+    """Whole days between publication and today. None if there is no date, or if it lies in the future (we do not trust
+    it). One day of slack is allowed for time zones."""
+    if published is None:
+        return None
+    days = (today - published).days
+    return max(days, 0) if days >= -1 else None
+
+
+def is_fresh(row) -> bool:
+    return bool(row["readable"] and row["age_days"] is not None and row["age_days"] <= FRESH_DAYS)
+
+
+def is_usable(row) -> bool:
+    """Readable, names the company, and fresh. (A source-quality test will join these later.)"""
+    return bool(is_fresh(row) and row["mentions"] > 0)
+
+
 # ------------------------------------------------------------------------------ the experiment
 def run_one(source, item, symbol, deps, company=""):
     started = time.time()
     row = {"source": source, "symbol": symbol, "title": item["title"][:100], "domain": "?", "real_url": False,
-           "fetched": False, "readable": False, "chars": 0, "mentions": 0, "reason": "", "seconds": 0.0, "text": ""}
+           "fetched": False, "readable": False, "chars": 0, "mentions": 0, "age_days": None, "reason": "", "seconds": 0.0, "text": ""}
     url, reason = deps["resolve"][source](item["link"])
     if not url:
         row.update(reason=reason or "no real address", seconds=round(time.time() - started, 1)); return row
@@ -195,7 +225,9 @@ def run_one(source, item, symbol, deps, company=""):
     text = deps["extract"](body)
     row.update(chars=len(text), seconds=round(time.time() - started, 1))
     if len(text) >= MIN_READABLE_CHARS:
-        row.update(readable=True, text=text, mentions=count_company_mentions(symbol, company or symbol, text))
+        published = deps.get("date_of", article_date)(body)
+        row.update(readable=True, text=text, mentions=count_company_mentions(symbol, company or symbol, text),
+                   age_days=age_in_days(published, deps.get("today", datetime.date.today)()))
     else:
         row["reason"] = f"text too short ({len(text)} characters: paywall or blocked?)"
     return row
@@ -209,7 +241,7 @@ def run_experiment(symbols, names, sources, per_stock, deps):
             items = deps["items"][source](company, per_stock)
             if not items:
                 rows.append({"source": source, "symbol": symbol, "title": "", "domain": "?", "real_url": False, "fetched": False,
-                             "readable": False, "chars": 0, "mentions": 0, "reason": "no headlines found", "seconds": 0.0, "text": "", "empty": True})
+                             "readable": False, "chars": 0, "mentions": 0, "age_days": None, "reason": "no headlines found", "seconds": 0.0, "text": "", "empty": True})
             for item in items:
                 rows.append(run_one(source, item, symbol, deps, company))
     return rows
@@ -223,6 +255,8 @@ def summarize(rows, symbols, sources, show_samples=False):
         real, fetched, readable = (sum(r[k] for r in mine) for k in ("real_url", "fetched", "readable"))
         covered = len({r["symbol"] for r in mine if r["readable"]})
         names_company = sum(r["readable"] and r["mentions"] > 0 for r in mine)
+        fresh, usable = sum(is_fresh(r) for r in mine), sum(is_usable(r) for r in mine)
+        no_date = sum(r["readable"] and r["age_days"] is None for r in mine)
         no_headlines = [r["symbol"] for r in rows if r["source"] == source and r.get("empty")]
         print(f"\n=== SOURCE: {source.upper()} " + "=" * 50)
         print(f"  headlines found:                     {total}" + (f"   (no headlines at all for: {', '.join(no_headlines)})" if no_headlines else ""))
@@ -230,6 +264,8 @@ def summarize(rows, symbols, sources, show_samples=False):
         print(f"  page opened (allowed, HTTP 200):     {pct(fetched)}")
         print(f"  readable article text (>= {MIN_READABLE_CHARS}):    {pct(readable)}")
         print(f"  readable AND names the company:      {pct(names_company)}")
+        print(f"  readable AND fresh (<= {FRESH_DAYS} days old):      {pct(fresh)}   (no readable date on the page: {no_date})")
+        print(f"  USABLE = readable + names it + fresh: {pct(usable)}")
         print(f"  stocks with at least one readable:   {covered} of {len(symbols)}")
         lengths = [r["chars"] for r in mine if r["readable"]]
         if lengths:
@@ -251,7 +287,7 @@ def summarize(rows, symbols, sources, show_samples=False):
 
 
 def save_csv(rows, path="experiment_articles_results.csv"):
-    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "chars", "mentions", "reason", "seconds"]
+    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "chars", "mentions", "age_days", "reason", "seconds"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
