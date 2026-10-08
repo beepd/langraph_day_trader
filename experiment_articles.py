@@ -15,6 +15,7 @@ Run it on your laptop AND on the VM: results can differ, and the VM is where the
 """
 import argparse
 import csv
+import re
 import statistics
 import sys
 import time
@@ -161,11 +162,22 @@ def extract_text(body: bytes) -> str:
     return trafilatura.extract(html, include_comments=False, include_tables=False) or ""
 
 
+def count_company_mentions(symbol: str, company: str, text: str) -> int:
+    """How many times the article body names the company (full name, first two words, or the symbol).
+    Same idea as mentions_company() in morning_run.py, but whole words only: inside a long article a bare
+    substring match would make 'ITC' match 'switch' and 'ABB' match 'abbreviation'."""
+    name = clean_name(company)
+    names = {name.lower(), " ".join(name.split()[:2]).lower(), symbol.lower()}
+    names.discard("")
+    pattern = "|".join(rf"(?<!\w){re.escape(n)}(?!\w)" for n in sorted(names, key=len, reverse=True))
+    return len(re.findall(pattern, text.lower()))
+
+
 # ------------------------------------------------------------------------------ the experiment
-def run_one(source, item, symbol, deps):
+def run_one(source, item, symbol, deps, company=""):
     started = time.time()
     row = {"source": source, "symbol": symbol, "title": item["title"][:100], "domain": "?", "real_url": False,
-           "fetched": False, "readable": False, "chars": 0, "reason": "", "seconds": 0.0, "text": ""}
+           "fetched": False, "readable": False, "chars": 0, "mentions": 0, "reason": "", "seconds": 0.0, "text": ""}
     url, reason = deps["resolve"][source](item["link"])
     if not url:
         row.update(reason=reason or "no real address", seconds=round(time.time() - started, 1)); return row
@@ -183,7 +195,7 @@ def run_one(source, item, symbol, deps):
     text = deps["extract"](body)
     row.update(chars=len(text), seconds=round(time.time() - started, 1))
     if len(text) >= MIN_READABLE_CHARS:
-        row.update(readable=True, text=text)
+        row.update(readable=True, text=text, mentions=count_company_mentions(symbol, company or symbol, text))
     else:
         row["reason"] = f"text too short ({len(text)} characters: paywall or blocked?)"
     return row
@@ -197,9 +209,9 @@ def run_experiment(symbols, names, sources, per_stock, deps):
             items = deps["items"][source](company, per_stock)
             if not items:
                 rows.append({"source": source, "symbol": symbol, "title": "", "domain": "?", "real_url": False, "fetched": False,
-                             "readable": False, "chars": 0, "reason": "no headlines found", "seconds": 0.0, "text": "", "empty": True})
+                             "readable": False, "chars": 0, "mentions": 0, "reason": "no headlines found", "seconds": 0.0, "text": "", "empty": True})
             for item in items:
-                rows.append(run_one(source, item, symbol, deps))
+                rows.append(run_one(source, item, symbol, deps, company))
     return rows
 
 
@@ -210,12 +222,14 @@ def summarize(rows, symbols, sources, show_samples=False):
         pct = lambda n: f"{n} ({100 * n / total:.0f}%)" if total else "0"
         real, fetched, readable = (sum(r[k] for r in mine) for k in ("real_url", "fetched", "readable"))
         covered = len({r["symbol"] for r in mine if r["readable"]})
+        names_company = sum(r["readable"] and r["mentions"] > 0 for r in mine)
         no_headlines = [r["symbol"] for r in rows if r["source"] == source and r.get("empty")]
         print(f"\n=== SOURCE: {source.upper()} " + "=" * 50)
         print(f"  headlines found:                     {total}" + (f"   (no headlines at all for: {', '.join(no_headlines)})" if no_headlines else ""))
         print(f"  real article address found:          {pct(real)}")
         print(f"  page opened (allowed, HTTP 200):     {pct(fetched)}")
         print(f"  readable article text (>= {MIN_READABLE_CHARS}):    {pct(readable)}")
+        print(f"  readable AND names the company:      {pct(names_company)}")
         print(f"  stocks with at least one readable:   {covered} of {len(symbols)}")
         lengths = [r["chars"] for r in mine if r["readable"]]
         if lengths:
@@ -237,7 +251,7 @@ def summarize(rows, symbols, sources, show_samples=False):
 
 
 def save_csv(rows, path="experiment_articles_results.csv"):
-    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "chars", "reason", "seconds"]
+    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "chars", "mentions", "reason", "seconds"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()

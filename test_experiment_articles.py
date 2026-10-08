@@ -84,5 +84,38 @@ except Exception as e:
 print("== 4. real helper behaviour ==")
 check("company name cleaning", E.clean_name("Power Finance Corporation Ltd.") == "Power Finance Corporation" and E.clean_name("Bajaj Finance Limited") == "Bajaj Finance")
 check("domain extraction", E.domain_of("https://www.economictimes.indiatimes.com/a/b") == "economictimes.indiatimes.com")
+print("== 5. check 1: does the article body name the company? (whole words only) ==")
+count = E.count_company_mentions
+check("full name counts once, not twice (longest match wins)", count("PFC", "Power Finance Corporation Ltd.", "Power Finance Corporation raised funds.") == 1)
+check("short name (first two words) counts", count("PFC", "Power Finance Corporation Ltd.", "Power Finance reported a profit.") == 1)
+check("symbol counts", count("PFC", "Power Finance Corporation Ltd.", "Shares of PFC rose. PFC also paid a dividend.") == 2)
+check("upper/lower case does not matter", count("TCS", "Tata Consultancy Services Ltd.", "tata consultancy services and TCS") == 2)
+check("possessive form counts", count("RELIANCE", "Reliance Industries Ltd.", "Reliance's retail arm grew") == 1)
+check("ITC is NOT found inside 'switch' or 'pitch'", count("ITC", "ITC Ltd.", "The switch to a new pitch failed.") == 0)
+check("ABB is NOT found inside 'abbreviation'", count("ABB", "ABB India Ltd.", "An abbreviation was used.") == 0)
+check("symbol with & works", count("M&M", "Mahindra & Mahindra Ltd.", "M&M launched a new SUV") == 1)
+check("one-word company name works", count("VEDL", "Vedanta Ltd.", "Vedanta said output rose") == 1)
+check("article about something else gives zero", count("PFC", "Power Finance Corporation Ltd.", "The monsoon arrived early this year.") == 0)
+check("empty text gives zero", count("PFC", "Power Finance Corporation Ltd.", "") == 0)
+
+print("== 6. check 1 inside the whole experiment ==")
+filler = "The market moved sideways today as traders waited for fresh cues. " * 12      # about 800 characters
+on_topic = b"<html>ON</html>"; off_topic = b"<html>OFF</html>"
+deps6 = {"items": {"google": lambda company, n: [{"title": "on", "link": "L1"}, {"title": "off", "link": "L2"}], "bing": lambda c, n: []},
+         "resolve": {"google": lambda link: (f"https://site-{link}.example/s", ""), "bing": E.bing_real_url},
+         "robots": E.Robots(fetch=lambda url: (404, b"", "", "HTTP 404")),
+         "fetch": lambda url: (200, on_topic if "L1" in url else off_topic, "text/html", ""),
+         "extract": lambda body: ("Power Finance Corporation reported strong results. " + filler) if body == on_topic else ("Sector wrap. " + filler),
+         "sleep": lambda s: None, "pause": 0}
+rows6 = E.run_experiment(["PFC"], {"PFC": "Power Finance Corporation Ltd."}, ["google"], 2, deps6)
+mentions = {r["title"]: r["mentions"] for r in rows6}
+check("on-topic article counted 1 mention, off-topic 0", mentions == {"on": 1, "off": 0}, f"{mentions}")
+buf6 = io.StringIO()
+with contextlib.redirect_stdout(buf6): E.summarize(rows6, ["PFC"], ["google"])
+check("summary shows readable AND names the company: 1 of 2", "readable AND names the company:      1 (50%)" in buf6.getvalue(), "")
+with tempfile.TemporaryDirectory() as d:
+    header = open(E.save_csv(rows6, os.path.join(d, "r6.csv")), encoding="utf-8").readline()
+check("CSV has a mentions column", ",mentions," in header, header.strip())
+
 print("\nALL CHECKS PASSED" if not failures else f"\n{len(failures)} CHECK(S) FAILED: {failures}")
 sys.exit(1 if failures else 0)
