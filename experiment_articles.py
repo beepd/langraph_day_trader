@@ -37,12 +37,12 @@ SOURCE_TIERS = {
     "A": [   # established news and business outlets
         "business-standard.com", "livemint.com", "thehindubusinessline.com", "ndtvprofit.com", "businesstoday.in",
         "financialexpress.com", "moneycontrol.com", "news18.com", "thehindu.com", "telegraphindia.com",
-        "indiatvnews.com", "zeebiz.com", "businessworld.in", "marketwatch.com",
+        "indiatvnews.com", "zeebiz.com", "businessworld.in", "marketwatch.com","economictimes.indiatimes.com", "cnbc.com",
     ],
     "B": [   # finance sites, aggregators, brokers, data vendors
         "tradingview.com", "scanx.trade", "investmentguruindia.com", "goodreturns.in", "kalkine.co.in",
         "equitymaster.com", "marketsmojo.com", "digitalterminal.in", "mediabrief.com", "sahi.com",
-        "univest.in", "upstox.com", "pluang.com",
+        "univest.in", "upstox.com", "pluang.com", "whalesbook.com",
     ],
 }
 TIER_ORDER = ["A", "B", "?"]
@@ -279,6 +279,20 @@ def usable_by_tier(rows) -> dict:
     return counts
 
 
+def stock_coverage(rows) -> dict:
+    """How many different stocks have at least one usable article: any source, from tier A or B, from tier A only."""
+    any_tier, a_or_b, a_only = set(), set(), set()
+    for r in rows:
+        if is_usable(r):
+            tier = tier_of(r["domain"])
+            any_tier.add(r["symbol"])
+            if tier in ("A", "B"):
+                a_or_b.add(r["symbol"])
+            if tier == "A":
+                a_only.add(r["symbol"])
+    return {"any": len(any_tier), "a_or_b": len(a_or_b), "a": len(a_only)}
+
+
 def unrated_sites(rows) -> list:
     """Websites we reached that are in no tier, alphabetical."""
     return sorted({r["domain"] for r in rows if r["real_url"] and tier_of(r["domain"]) == "?"})
@@ -316,6 +330,8 @@ def summarize(rows, symbols, sources, show_samples=False, show_sites=False):
         print(f"  readable AND fresh (<= {FRESH_DAYS} days old):      {pct(fresh)}   (no readable date on the page: {no_date})")
         print(f"  USABLE = readable + names it + fresh: {pct(usable)}")
         print("  usable, by source tier:              " + ", ".join(f"{tier} {n}" for tier, n in usable_by_tier(mine).items()))
+        cover = stock_coverage(mine)
+        print(f"  stocks with a usable article:        {cover['any']} of {len(symbols)}   (from tier A or B: {cover['a_or_b']}, from tier A: {cover['a']})")
         if unrated_sites(mine):
             print("  unrated websites (tier ?):           " + ", ".join(unrated_sites(mine)))
         print(f"  stocks with at least one readable:   {covered} of {len(symbols)}")

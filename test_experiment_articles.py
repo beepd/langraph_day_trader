@@ -223,5 +223,21 @@ check("CSV has a tier column", "tier" in csv_rows[0], f"{list(csv_rows[0])}")
 tiers_in_csv = [r["tier"] for r in csv_rows]
 check("CSV tiers: A, A, B, ?, A, A, ? and blank when there is no real address", tiers_in_csv == ["A", "A", "B", "?", "A", "A", "?", ""], f"{tiers_in_csv}")
 
+print("== 11. per-stock coverage, and the tier edits ==")
+check("cnbc.com is tier A, whalesbook.com is tier B, fibre2fashion.com stays ?", (E.tier_of("cnbc.com"), E.tier_of("whalesbook.com"), E.tier_of("fibre2fashion.com")) == ("A", "B", "?"))
+rows11 = [make_row("business-standard.com", symbol="S1"), make_row("livemint.com", symbol="S1"),      # S1: two usable tier-A articles
+          make_row("tradingview.com", symbol="S2"),                                                    # S2: usable, tier B only
+          make_row("ad-hoc-news.de", symbol="S3"),                                                     # S3: usable, but unrated site
+          make_row("business-standard.com", symbol="S4", fresh=False),                                 # S4: readable but stale
+          make_row("business-standard.com", symbol="S6", named=False)]                                 # S6: readable, fresh, but off topic
+# S5 has no rows at all
+cover = E.stock_coverage(rows11)
+check("coverage: 3 stocks with any usable article, 2 from A or B, 1 from A only", cover == {"any": 3, "a_or_b": 2, "a": 1}, f"{cover}")
+check("a stock with two usable articles is counted once", E.stock_coverage([make_row("cnbc.com", symbol="X"), make_row("cnbc.com", symbol="X")]) == {"any": 1, "a_or_b": 1, "a": 1})
+check("no rows gives zeros", E.stock_coverage([]) == {"any": 0, "a_or_b": 0, "a": 0})
+buf11 = io.StringIO()
+with contextlib.redirect_stdout(buf11): E.summarize(rows11, ["S1", "S2", "S3", "S4", "S5", "S6"], ["google"])
+check("summary shows coverage out of the 6 stocks tested", "stocks with a usable article:        3 of 6   (from tier A or B: 2, from tier A: 1)" in buf11.getvalue(), "")
+
 print("\nALL CHECKS PASSED" if not failures else f"\n{len(failures)} CHECK(S) FAILED: {failures}")
 sys.exit(1 if failures else 0)
