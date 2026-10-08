@@ -9,6 +9,7 @@ requests, and no attempt to get past paywalls or blocks. If a site says no, that
     python experiment_articles.py                    10 sample stocks, 3 headlines each, both sources
     python experiment_articles.py PFC VEDL TRENT     your own stocks (symbols from nifty100.csv)
     python experiment_articles.py --samples          also print the first words of a few readable articles
+    python experiment_articles.py --sites            also print every website: tried / readable / usable
 
 Needs:  pip install trafilatura googlenewsdecoder
 Run it on your laptop AND on the VM: results can differ, and the VM is where the real run happens.
@@ -247,7 +248,19 @@ def run_experiment(symbols, names, sources, per_stock, deps):
     return rows
 
 
-def summarize(rows, symbols, sources, show_samples=False):
+def site_stats(rows):
+    """Per website: (domain, tried, readable, usable), most-tried first, ties in alphabetical order."""
+    stats = defaultdict(lambda: [0, 0, 0])
+    for r in rows:
+        if r["real_url"]:
+            counts = stats[r["domain"]]
+            counts[0] += 1
+            counts[1] += bool(r["readable"])
+            counts[2] += is_usable(r)
+    return sorted(((domain, *counts) for domain, counts in stats.items()), key=lambda row: (-row[1], row[0]))
+
+
+def summarize(rows, symbols, sources, show_samples=False, show_sites=False):
     for source in sources:
         mine = [r for r in rows if r["source"] == source and not r.get("empty")]
         total = len(mine)
@@ -273,13 +286,13 @@ def summarize(rows, symbols, sources, show_samples=False):
         reasons = Counter(r["reason"].split(" (")[0] for r in mine if r["reason"])
         if reasons:
             print("  why the rest failed:                 " + "; ".join(f"{why} x{n}" for why, n in reasons.most_common(5)))
-        by_site = defaultdict(lambda: [0, 0])
-        for r in mine:
-            if r["real_url"]:
-                by_site[r["domain"]][0] += 1
-                by_site[r["domain"]][1] += r["readable"]
-        if by_site:
-            print("  by website (readable / tried):       " + ", ".join(f"{d} {g}/{t}" for d, (t, g) in sorted(by_site.items(), key=lambda kv: -kv[1][0])[:8]))
+        sites = site_stats(mine)
+        if sites:
+            print("  by website (usable / tried):         " + ", ".join(f"{d} {u}/{t}" for d, t, g, u in sites[:8]))
+            if show_sites:
+                print(f"  {'ALL WEBSITES':34}{'tried':>5} {'readable':>8} {'usable':>6}")
+                for d, t, g, u in sites:
+                    print(f"    {d:32}{t:>5} {g:>8} {u:>6}")
         if show_samples:
             for r in [r for r in mine if r["readable"]][:3]:
                 print(f"  sample [{r['domain']}]: {' '.join(r['text'].split())[:160]}...")
@@ -302,6 +315,7 @@ def main():
     parser.add_argument("--per-stock", type=int, default=3, help="headlines per stock and source")
     parser.add_argument("--pause", type=float, default=1.5, help="seconds to wait before each page request")
     parser.add_argument("--samples", action="store_true", help="print the first words of a few readable articles")
+    parser.add_argument("--sites", action="store_true", help="print the full table of websites (tried / readable / usable)")
     args = parser.parse_args()
     symbols = [s.upper() for s in args.symbols] or DEFAULT_SYMBOLS
     names = load_names()
@@ -314,7 +328,7 @@ def main():
     print(f"Testing {len(symbols)} stocks x {len(args.sources)} source(s) x up to {args.per_stock} headlines = up to {pages} pages "
           f"(about {int(pages * (args.pause + 2) / 60) + 1} minutes). Press Ctrl+C to stop.")
     rows = run_experiment(symbols, names, args.sources, args.per_stock, deps)
-    summarize(rows, symbols, args.sources, args.samples)
+    summarize(rows, symbols, args.sources, args.samples, args.sites)
     print(f"\nDetails (titles, websites, reasons; no article text) saved to {save_csv(rows)}")
 
 

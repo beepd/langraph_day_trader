@@ -159,5 +159,36 @@ with tempfile.TemporaryDirectory() as d:
     lines8 = open(E.save_csv(rows8, os.path.join(d, "r8.csv")), encoding="utf-8").read().splitlines()
 check("CSV has an age_days column", ",age_days," in lines8[0], lines8[0])
 
+print("== 9. check 3a: which websites give usable articles? ==")
+def make_row(domain, readable=True, fresh=True, named=True, real_url=True, symbol="PFC"):
+    return {"source": "google", "symbol": symbol, "title": "t", "domain": domain, "real_url": real_url, "fetched": readable,
+            "readable": readable, "chars": 900 if readable else 0, "mentions": 1 if named else 0,
+            "age_days": (1 if fresh else 9) if readable else None, "reason": "" if readable else "text too short", "seconds": 1.0, "text": "x" * 900 if readable else ""}
+rows9 = [make_row("a.com"), make_row("a.com", fresh=False), make_row("a.com", readable=False),     # a.com: 3 tried, 2 readable, 1 usable
+         make_row("b.com"),                                                                          # b.com: 1 tried, 1 readable, 1 usable
+         make_row("c.com", readable=False), make_row("c.com", readable=False),                      # c.com: 2 tried, none readable
+         make_row("d.com", named=False),                                                             # d.com: readable and fresh but off topic: not usable
+         make_row("?", real_url=False)]                                                              # no real address: left out of the table
+stats = E.site_stats(rows9)
+check("most-tried first, ties alphabetical", [row[0] for row in stats] == ["a.com", "c.com", "b.com", "d.com"], f"{[row[0] for row in stats]}")
+check("a.com: 3 tried, 2 readable, 1 usable", stats[0] == ("a.com", 3, 2, 1), f"{stats[0]}")
+check("c.com: 2 tried, 0 readable, 0 usable", stats[1] == ("c.com", 2, 0, 0), f"{stats[1]}")
+check("d.com: readable and fresh but does not name the company, so not usable", stats[3] == ("d.com", 1, 1, 0), f"{stats[3]}")
+check("rows without a real address are left out", all(row[0] != "?" for row in stats))
+buf9 = io.StringIO()
+with contextlib.redirect_stdout(buf9): E.summarize(rows9, ["PFC"], ["google"])
+short = buf9.getvalue()
+check("short line shows usable / tried", "by website (usable / tried):         a.com 1/3, c.com 0/2, b.com 1/1, d.com 0/1" in short, "")
+check("full table is not printed unless asked", "ALL WEBSITES" not in short)
+buf9b = io.StringIO()
+with contextlib.redirect_stdout(buf9b): E.summarize(rows9, ["PFC"], ["google"], show_sites=True)
+full = buf9b.getvalue()
+check("full table printed when asked, with a.com's numbers", "ALL WEBSITES" in full and any(l.split() == ["a.com", "3", "2", "1"] for l in full.splitlines()))
+many = [make_row(f"site{i}.com") for i in range(12)]
+buf9c = io.StringIO()
+with contextlib.redirect_stdout(buf9c): E.summarize(many, ["PFC"], ["google"])
+line = [l for l in buf9c.getvalue().splitlines() if "by website" in l][0]
+check("short line is capped at 8 websites", line.count(".com") == 8, line)
+
 print("\nALL CHECKS PASSED" if not failures else f"\n{len(failures)} CHECK(S) FAILED: {failures}")
 sys.exit(1 if failures else 0)
