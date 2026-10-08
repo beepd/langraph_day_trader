@@ -394,7 +394,7 @@ Early observations (a handful of days, so **treat as hints, not conclusions**):
 
 Tidy-ups still open: the planner's reason text is cut at 200 characters; the end-of-run summary does not show the
 "adjusted by the rulebook" marker; `schema.sql` exists twice (root and `sql/`); the dashboard's `config.toml` must sit
-in `dashboard/.streamlit/` for Streamlit to pick it up; no `LICENSE` file yet.
+    in `dashboard/.streamlit/` for Streamlit to pick it up.
 
 ## Roadmap
 
@@ -440,4 +440,4 @@ How this project is built, so a new collaborator (human or AI) can continue smoo
 
 ## License
 
-No license file has been added yet. Choose one (for example MIT) before inviting contributions.
+MIT, see [`LICENSE`](LICENSE). The disclaimer at the top still applies: this is not investment advice.
