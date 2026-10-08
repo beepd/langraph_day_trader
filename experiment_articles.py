@@ -31,6 +31,21 @@ from collections import Counter, defaultdict
 
 USER_AGENT = "day-trader-research/0.1 (personal learning project; one request per page)"
 DEFAULT_SYMBOLS = ["PFC", "BAJFINANCE", "VEDL", "TRENT", "KOTAKBANK", "GODREJCP", "ABB", "ADANIGREEN", "HINDUNILVR", "RELIANCE"]
+# Who we trust. PLAIN DATA: edit freely, no logic here. A site not listed is "?" and is named in the summary, so new ones get noticed.
+# A subdomain counts too (m.livemint.com is livemint.com). This is our judgment, not a measurement: report cards will tell.
+SOURCE_TIERS = {
+    "A": [   # established news and business outlets
+        "business-standard.com", "livemint.com", "thehindubusinessline.com", "ndtvprofit.com", "businesstoday.in",
+        "financialexpress.com", "moneycontrol.com", "news18.com", "thehindu.com", "telegraphindia.com",
+        "indiatvnews.com", "zeebiz.com", "businessworld.in", "marketwatch.com",
+    ],
+    "B": [   # finance sites, aggregators, brokers, data vendors
+        "tradingview.com", "scanx.trade", "investmentguruindia.com", "goodreturns.in", "kalkine.co.in",
+        "equitymaster.com", "marketsmojo.com", "digitalterminal.in", "mediabrief.com", "sahi.com",
+        "univest.in", "upstox.com", "pluang.com",
+    ],
+}
+TIER_ORDER = ["A", "B", "?"]
 FRESH_DAYS = 3                   # an article this many days old or newer counts as fresh (the same window as Google's when:3d)
 MIN_READABLE_CHARS = 500          # less than this and we do not call it an article (a paywall or a blocked page)
 PAGE_TIMEOUT = 15
@@ -248,6 +263,27 @@ def run_experiment(symbols, names, sources, per_stock, deps):
     return rows
 
 
+def tier_of(domain: str) -> str:
+    """'A', 'B' or '?' (not listed). A subdomain of a listed site counts as that site."""
+    for tier, sites in SOURCE_TIERS.items():
+        if any(domain == site or domain.endswith("." + site) for site in sites):
+            return tier
+    return "?"
+
+
+def usable_by_tier(rows) -> dict:
+    counts = {tier: 0 for tier in TIER_ORDER}
+    for r in rows:
+        if is_usable(r):
+            counts[tier_of(r["domain"])] += 1
+    return counts
+
+
+def unrated_sites(rows) -> list:
+    """Websites we reached that are in no tier, alphabetical."""
+    return sorted({r["domain"] for r in rows if r["real_url"] and tier_of(r["domain"]) == "?"})
+
+
 def site_stats(rows):
     """Per website: (domain, tried, readable, usable), most-tried first, ties in alphabetical order."""
     stats = defaultdict(lambda: [0, 0, 0])
@@ -279,6 +315,9 @@ def summarize(rows, symbols, sources, show_samples=False, show_sites=False):
         print(f"  readable AND names the company:      {pct(names_company)}")
         print(f"  readable AND fresh (<= {FRESH_DAYS} days old):      {pct(fresh)}   (no readable date on the page: {no_date})")
         print(f"  USABLE = readable + names it + fresh: {pct(usable)}")
+        print("  usable, by source tier:              " + ", ".join(f"{tier} {n}" for tier, n in usable_by_tier(mine).items()))
+        if unrated_sites(mine):
+            print("  unrated websites (tier ?):           " + ", ".join(unrated_sites(mine)))
         print(f"  stocks with at least one readable:   {covered} of {len(symbols)}")
         lengths = [r["chars"] for r in mine if r["readable"]]
         if lengths:
@@ -290,9 +329,9 @@ def summarize(rows, symbols, sources, show_samples=False, show_sites=False):
         if sites:
             print("  by website (usable / tried):         " + ", ".join(f"{d} {u}/{t}" for d, t, g, u in sites[:8]))
             if show_sites:
-                print(f"  {'ALL WEBSITES':34}{'tried':>5} {'readable':>8} {'usable':>6}")
+                print(f"  {'ALL WEBSITES':30}{'tier':>4} {'tried':>5} {'readable':>8} {'usable':>6}")
                 for d, t, g, u in sites:
-                    print(f"    {d:32}{t:>5} {g:>8} {u:>6}")
+                    print(f"    {d:28}{tier_of(d):>4} {t:>5} {g:>8} {u:>6}")
         if show_samples:
             for r in [r for r in mine if r["readable"]][:3]:
                 print(f"  sample [{r['domain']}]: {' '.join(r['text'].split())[:160]}...")
@@ -300,11 +339,11 @@ def summarize(rows, symbols, sources, show_samples=False, show_sites=False):
 
 
 def save_csv(rows, path="experiment_articles_results.csv"):
-    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "chars", "mentions", "age_days", "reason", "seconds"]
+    fields = ["source", "symbol", "title", "domain", "real_url", "fetched", "readable", "tier", "chars", "mentions", "age_days", "reason", "seconds"]
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows({**r, "tier": tier_of(r["domain"]) if r["real_url"] else ""} for r in rows)
     return path
 
 

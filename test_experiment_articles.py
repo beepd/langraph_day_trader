@@ -183,12 +183,45 @@ check("full table is not printed unless asked", "ALL WEBSITES" not in short)
 buf9b = io.StringIO()
 with contextlib.redirect_stdout(buf9b): E.summarize(rows9, ["PFC"], ["google"], show_sites=True)
 full = buf9b.getvalue()
-check("full table printed when asked, with a.com's numbers", "ALL WEBSITES" in full and any(l.split() == ["a.com", "3", "2", "1"] for l in full.splitlines()))
+check("full table printed when asked, with a.com's numbers", "ALL WEBSITES" in full and any(l.split() == ["a.com", "?", "3", "2", "1"] for l in full.splitlines()))
 many = [make_row(f"site{i}.com") for i in range(12)]
 buf9c = io.StringIO()
 with contextlib.redirect_stdout(buf9c): E.summarize(many, ["PFC"], ["google"])
 line = [l for l in buf9c.getvalue().splitlines() if "by website" in l][0]
 check("short line is capped at 8 websites", line.count(".com") == 8, line)
+
+print("== 10. check 3b: source tiers (A, B, ?) ==")
+check("a listed tier-A site", E.tier_of("business-standard.com") == "A")
+check("a listed tier-B site", E.tier_of("tradingview.com") == "B")
+check("a subdomain counts as its site", E.tier_of("m.livemint.com") == "A" and E.tier_of("economy.business-standard.com") == "A")
+check("thehindu.com and thehindubusinessline.com are separate sites, both A", E.tier_of("thehindu.com") == "A" and E.tier_of("thehindubusinessline.com") == "A")
+check("a look-alike name is NOT matched", E.tier_of("notbusiness-standard.com") == "?" and E.tier_of("business-standard.com.evil.example") == "?")
+check("an unlisted site is ?", E.tier_of("ad-hoc-news.de") == "?" and E.tier_of("msn.com") == "?")
+check("the placeholder domain '?' is ?", E.tier_of("?") == "?")
+all_sites = [site for sites in E.SOURCE_TIERS.values() for site in sites]
+check("tier list sanity: no site in two tiers, all lowercase, no 'www.'", len(all_sites) == len(set(all_sites)) and all(s == s.lower() and not s.startswith("www.") for s in all_sites), f"{len(all_sites)} sites")
+check("tier list sanity: only tiers A and B are listed", sorted(E.SOURCE_TIERS) == ["A", "B"] and E.TIER_ORDER == ["A", "B", "?"])
+rows10 = [make_row("business-standard.com"), make_row("business-standard.com"), make_row("tradingview.com"), make_row("a.com"),
+          make_row("business-standard.com", fresh=False),          # readable but stale: not usable
+          make_row("livemint.com", named=False),                   # readable and fresh but off topic: not usable
+          make_row("msn.com", readable=False), make_row("?", real_url=False, readable=False)]   # no real address: cannot be readable
+check("usable counted per tier", E.usable_by_tier(rows10) == {"A": 2, "B": 1, "?": 1}, f"{E.usable_by_tier(rows10)}")
+check("unrated websites listed once each, alphabetical, without the placeholder", E.unrated_sites(rows10) == ["a.com", "msn.com"], f"{E.unrated_sites(rows10)}")
+buf10 = io.StringIO()
+with contextlib.redirect_stdout(buf10): E.summarize(rows10, ["PFC"], ["google"])
+out10 = buf10.getvalue()
+check("summary shows usable by tier", "usable, by source tier:              A 2, B 1, ? 1" in out10)
+check("summary names the unrated websites", "unrated websites (tier ?):           a.com, msn.com" in out10)
+buf10b = io.StringIO()
+with contextlib.redirect_stdout(buf10b): E.summarize([make_row("business-standard.com")], ["PFC"], ["google"])
+check("no 'unrated' line when every site is rated", "unrated websites" not in buf10b.getvalue())
+with tempfile.TemporaryDirectory() as d:
+    import csv as _csv
+    csv_path = E.save_csv(rows10, os.path.join(d, "r10.csv"))
+    csv_rows = list(_csv.DictReader(open(csv_path, encoding="utf-8")))
+check("CSV has a tier column", "tier" in csv_rows[0], f"{list(csv_rows[0])}")
+tiers_in_csv = [r["tier"] for r in csv_rows]
+check("CSV tiers: A, A, B, ?, A, A, ? and blank when there is no real address", tiers_in_csv == ["A", "A", "B", "?", "A", "A", "?", ""], f"{tiers_in_csv}")
 
 print("\nALL CHECKS PASSED" if not failures else f"\n{len(failures)} CHECK(S) FAILED: {failures}")
 sys.exit(1 if failures else 0)
