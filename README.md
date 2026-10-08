@@ -393,7 +393,7 @@ Early observations (a handful of days, so **treat as hints, not conclusions**):
 - Results from a handful of days are statistically meaningless.
 
 Tidy-ups still open: the planner's reason text is cut at 200 characters; the end-of-run summary does not show the
-"adjusted by the rulebook" marker; `schema.sql` exists twice (root and `sql/`); the dashboard's `config.toml` must sit
+"adjusted by the rulebook" marker; the dashboard's `config.toml` must sit
     in `dashboard/.streamlit/` for Streamlit to pick it up.
 
 ## Roadmap

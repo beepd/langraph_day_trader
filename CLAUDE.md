@@ -66,8 +66,8 @@ Key invariants:
 
 ## Database
 
-The canonical SQL is in `sql/`: apply `schema.sql`, then `migration_001` … `migration_005` in order. The root
-`schema.sql` is a stale duplicate. All tables have RLS with no policies, so the public sees only the `public_*`
+The canonical SQL is in `sql/`: apply `schema.sql`, then `migration_001` … `migration_005` in order.
+All tables have RLS with no policies, so the public sees only the `public_*`
 views. Rollout order: run SQL on the test Supabase project, then on prod, then push the code that uses it.
 
 ## Working with the owner
