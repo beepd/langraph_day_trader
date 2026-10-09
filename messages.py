@@ -10,9 +10,10 @@ def signed_money(value: float) -> str:
     return f"{'+' if value >= 0 else '−'}₹{abs(value):,.0f}"
 
 
-def _short(text: str, limit: int = 110) -> str:
-    text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+def _tidy(text) -> str:
+    """Collapse stray line breaks and runs of spaces. Nothing is ever cut: messages are shown in full
+    (notify.send_telegram splits a long message into several Telegram messages by itself)."""
+    return " ".join(str(text).split())
 
 
 # ---- morning run ---------------------------------------------------------------------------
@@ -21,7 +22,7 @@ def market_closed(why: str) -> str:
 
 
 def balance_problem(error) -> str:
-    return f"⚠️ <b>Run stopped</b>\nCould not read the balance from Supabase: {esc(str(error)[:200])}"
+    return f"⚠️ <b>Run stopped</b>\nCould not read the balance from Supabase: {esc(str(error))}"
 
 
 def run_started(now, balance: float, source: str, model: str) -> str:
@@ -34,10 +35,8 @@ def screener(passed: int, universe: int, top: list, live: bool) -> str:
     if not top:
         return f"📊 <b>Screener</b>: nothing is moving enough (0 of {universe}). No trades today."
     lines = [f"📊 <b>Screener</b>: {passed} of {universe} stocks are moving"]
-    for symbol, price, change, rel_volume in top[:5]:
+    for symbol, price, change, rel_volume in top:
         lines.append(f"• <b>{esc(symbol)}</b> {change:+.1f}% · volume x{rel_volume:.1f} · {money(price)}")
-    if len(top) > 5:
-        lines.append(f"…and {len(top) - 5} more go on to the news step")
     if not live:
         lines.append("⚠️ Data is from the last completed session, not today (testing only)")
     return "\n".join(lines)
@@ -46,20 +45,28 @@ def screener(passed: int, universe: int, top: list, live: bool) -> str:
 def news(with_news: int, total: int, without: list) -> str:
     text = f"📰 <b>News</b>: headlines found for {with_news} of {total} movers"
     if without:
-        text += f"\nNo headlines: {esc(', '.join(without[:6]))}"
+        text += f"\nNo headlines: {esc(', '.join(without))}"
     return text
 
 
-def analyst(on_watchlist: list, total: int) -> str:
-    """on_watchlist = list of (symbol, reason)."""
+def analyst(on_watchlist: list, total: int, dropped: list = (), mode: str = "classic") -> str:
+    """on_watchlist = list of (symbol, reason) or (symbol, reason, label); the label (checklist mode) says what the
+    event was, for example "earnings · happened · figure in headline".
+    dropped = list of (symbol, sector, kept_symbol): strong by the rules but removed by the one-per-sector rule."""
     if not on_watchlist:
-        return f"🧠 <b>Analyst</b>: no strong catalyst among {total} movers. No trades today."
-    lines = [f"🧠 <b>Analyst</b>: {len(on_watchlist)} strong catalyst(s) among {total} movers"]
-    for symbol, reason in on_watchlist[:6]:
-        lines.append(f"✅ <b>{esc(symbol)}</b>: {esc(_short(reason))}")
-    if len(on_watchlist) > 6:
-        lines.append(f"…and {len(on_watchlist) - 6} more")
-    return "\n".join(lines)
+        text = f"🧠 <b>Analyst</b>: no strong catalyst among {total} movers. No trades today."
+    else:
+        lines = [f"🧠 <b>Analyst</b> ({esc(mode)}): {len(on_watchlist)} strong catalyst(s) among {total} movers"]
+        for item in on_watchlist:
+            symbol, reason = item[0], item[1]
+            label = item[2] if len(item) > 2 and item[2] else None
+            lines.append(f"✅ <b>{esc(symbol)}</b>" + (f" ({esc(label)})" if label else "") + f": {esc(_tidy(reason))}")
+        text = "\n".join(lines)
+    if dropped:
+        text += "\n" + "\n".join(
+            f"➖ <b>{esc(symbol)}</b> was strong too, but {esc(kept)} already covers the same sector ({esc(sector)})"
+            for symbol, sector, kept in dropped)
+    return text
 
 
 def plans(accepted: list, rejected: list, skipped: list, balance: float) -> str:
@@ -69,9 +76,11 @@ def plans(accepted: list, rejected: list, skipped: list, balance: float) -> str:
         lines.append(f"🟢 <b>{esc(p['symbol'])}</b>: buy {p['shares']} @ {p['entry']:.2f}")
         lines.append(f"    stop {p['stop']:.2f} · target {p['target']:.2f} · risk {money(p['max_loss'])} / reward {money(p['max_gain'])}")
         if p.get("nudges"):
-            lines.append("    ✎ adjusted by the rulebook to fit the limits")
+            lines.append("    ✎ adjusted by the rulebook to fit the limits: " + esc("; ".join(p["nudges"])))
+        if p.get("reason"):
+            lines.append(f"    why: {esc(_tidy(p['reason']))}")
     for symbol, reason in rejected:
-        lines.append(f"✖ <b>{esc(symbol)}</b> rejected: {esc(_short(reason, 90))}")
+        lines.append(f"✖ <b>{esc(symbol)}</b> rejected: {esc(_tidy(reason))}")
     if skipped:
         lines.append(f"Skipped (position limit): {esc(', '.join(skipped))}")
     if not accepted:
@@ -88,7 +97,7 @@ def run_complete(accepted: list, balance: float, run_id, save_error) -> str:
     else:
         text = "✅ <b>Run complete</b>: no trades today"
     if save_error:
-        text += f"\n⚠️ Could not save to Supabase: {esc(str(save_error)[:150])}"
+        text += f"\n⚠️ Could not save to Supabase: {esc(str(save_error))}"
     else:
         text += f"\nSaved as run #{run_id}"
     return text
@@ -136,7 +145,7 @@ def settlement_incomplete(problems: int) -> str:
 
 # ---- failures ------------------------------------------------------------------------------
 def crash(job: str, error) -> str:
-    return f"❌ <b>{esc(job)} crashed</b>\n<code>{esc(type(error).__name__)}: {esc(str(error)[:300])}</code>"
+    return f"❌ <b>{esc(job)} crashed</b>\n<code>{esc(type(error).__name__)}: {esc(str(error))}</code>"
 
 
 def gave_up(job: str, attempts: int, outcome: str) -> str:

@@ -95,9 +95,10 @@ check("HCLTECH: strong by rules but dropped by the sector rule",
 check("SBIN: stale headline means weak, with a reason", v["SBIN"].strength == "weak" and "older than" in v["SBIN"].checklist_notes)
 check("SBIN: stale headline means has_catalyst is False", v["SBIN"].has_catalyst is False)
 check("ONGC: 'other' is weak", v["ONGC"].strength == "weak" and not v["ONGC"].has_catalyst)
+check("Telegram message shows the event label and the whole reason", "earnings · happened · figure in headline" in sent[0] and "Short factual reason." in sent[0])
 check("INFY: no headlines, model not asked", v["INFY"].reason == "No headlines found" and U["INFY"] not in fake_llm.calls and v["INFY"].strength == "weak")
 check("WIPRO: garbled twice, asked exactly twice, weak, no answer", fake_llm.calls[U["WIPRO"]] == 2 and v["WIPRO"].strength == "weak" and "garbled" in v["WIPRO"].reason)
-check("a Telegram analyst message was sent with the two watchlist stocks", len(sent) == 1 and "TCS" in sent[0] and "APOLLOHOSP" in sent[0] and "HCLTECH" not in sent[0])
+check("a Telegram analyst message was sent with the two watchlist stocks", len(sent) == 1 and "TCS" in sent[0] and "APOLLOHOSP" in sent[0] and "same sector" in sent[0])
 
 print("== 2. the model cannot talk its way past the code ==")
 sent.clear(); fake_llm.calls.clear()

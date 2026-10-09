@@ -198,6 +198,7 @@ Keep the chat **private**: it shows specific stocks and prices.
 ```
 .
 ├── morning_run.py             the morning job: preflight, screener, news, analyst, planner (a LangGraph graph)
+├── checklist.py               the checklist analyst's rules: the model answers facts, this file decides "strong"
 ├── settle_day.py              the end-of-day job: settlement + report card
 ├── scheduler.py               runs both jobs on weekdays (the VM runs this as a systemd service)
 ├── rules.py                   the risk rulebook, size_trade() and nudge_plan()
@@ -218,6 +219,8 @@ Keep the chat **private**: it shows specific stocks and prices.
 │   ├── migration_003_public_everything.sql   the full public story, one official run per day
 │   ├── migration_004_candidate_outcomes.sql  the report-card table
 │   ├── migration_005_candidate_report.sql    a private view joining everything about each candidate
+│   ├── migration_006_checklist.sql           the checklist analyst's columns and event types
+│   ├── migration_007_checklist_views.sql     shows those columns in the report-card and public views
 │   └── analysis_group_comparison.sql         strong vs weak vs skipped, grouped
 ├── test_*.py                  offline tests (no network, no database): see Tests
 └── dashboard/                 the public Streamlit dashboard (own theme and metrics)
@@ -238,7 +241,8 @@ for Gemini, or OpenAI), and optionally a Telegram bot (from `@BotFather`).
    CSV from NSE (niftyindices.com); it needs a `Symbol` column and ideally `Company Name`.
 3. **Create the database.** In the Supabase SQL Editor run, in order: `sql/schema.sql`, `sql/migration_001.sql`,
    `sql/migration_002_public_views.sql`, `sql/migration_003_public_everything.sql`,
-   `sql/migration_004_candidate_outcomes.sql`, `sql/migration_005_candidate_report.sql`.
+   `sql/migration_004_candidate_outcomes.sql`, `sql/migration_005_candidate_report.sql`, `sql/migration_006_checklist.sql`,
+   `sql/migration_007_checklist_views.sql`.
 4. **Configure.** Copy `.env.example` to `.env` and fill it in (table below). Use the Supabase **secret** key for
    `SUPABASE_KEY`. Never commit `.env`.
 5. **Check the pieces.**
@@ -274,6 +278,9 @@ python test_nudge.py              # the rulebook's nudge: real plans + 200,000 r
 python test_candidate_outcome.py  # the report-card calculation on hand-made days
 python test_report_card.py        # whole settlement + report card, including a report-card failure that must not block the balance
 python test_backfill.py           # the backfill: official run per day, skips, re-runs without duplicates
+python test_checklist.py          # the checklist analyst's rules, sector cap and freshness
+python test_morning_checklist.py  # the checklist analyst inside the morning run, with a fake model
+python test_messages.py           # Telegram messages are complete (nothing is cut)
 ```
 
 ## Dashboard
@@ -302,6 +309,7 @@ and why it did or didn't act), all trades (with CSV download), blog, and about. 
 | `SUPABASE_PUBLISHABLE_KEY` | dashboard | Public, read-only key |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | all jobs | Notifications. Optional |
 | `TELEGRAM_ENABLED=0` | all jobs | Mute all messages |
+| `ANALYST_MODE` | morning run | `classic` (default: the model decides *strong*) or `checklist` (the model answers facts, `checklist.py` decides). Checklist needs `migration_006` first; a typo stops the run. Changing it needs `sudo systemctl restart day-trader` |
 | `NSE_HOLIDAYS` | morning run | Comma-separated `YYYY-MM-DD` dates, e.g. `2026-10-20,2026-11-10`. Holidays vary every year, so you list them. A badly written date such as `2026-12-5` silently never matches |
 | `MORNING_TIME`, `SETTLE_TIME` | scheduler | Default `09:35` and `15:40` (IST) |
 | `FORCE_RUN`, `FORCE_SETTLE` | jobs | Testing switches. The scheduler forces them off |
@@ -409,9 +417,10 @@ Tidy-ups still open: the planner's reason text is cut at 200 characters; the end
 - [x] Report card for every candidate, with a backfill and comparison queries
 - [ ] **Richer news input.** A first experiment found readable article text behind about 90% of Google News links (all
       10 sample stocks covered); next: relevance, freshness and source-quality checks, and a run from the VM
-- [ ] **A "checklist" analyst.** The model answers plain factual questions (what happened, event type, already happened
-      or only expected, is there a number, who is the source, before the open?) and code decides *strong*. Also sector
-      context and avoiding two stocks from the same story
+- [x] **A "checklist" analyst** (`ANALYST_MODE=checklist`). The model answers plain factual questions (event type, happened
+      or only expected, bullish, is there a number) and code decides *strong*: an allowed event type, already happened,
+      bullish, and a headline that names the company and is at most 3 days old. At most one strong stock per sector.
+      Now collecting days to compare it with the classic analyst
 - [ ] Backup model if the main one fails
 - [ ] "Did it run today?" alert (a check on the VM, later an outside heartbeat)
 - [ ] An "after costs" figure next to the gross result

@@ -30,6 +30,9 @@ python test_nudge.py               # rulebook nudge, incl. a 200k random-plan pr
 python test_candidate_outcome.py
 python test_report_card.py         # full settle_day with a stand-in Supabase client and stand-in yfinance
 python test_backfill.py
+python test_checklist.py
+python test_morning_checklist.py   # uses stand-in langgraph/yfinance/supabase modules
+python test_messages.py
 python test_experiment_articles.py
 ```
 
@@ -39,7 +42,9 @@ There is no linter or build step.
 
 - **`morning_run.py`**: a LangGraph `StateGraph` over a `State` TypedDict with the nodes
   preflight → screen_stocks → fetch_news → analyze_news → plan_trades, plus conditional edges (`decide_*`) that stop
-  early. The LLM fills two Pydantic models: `Verdict` (analyst) and `TradePlan` (planner). Screener/strategy
+  early. `ANALYST_MODE` picks the analyst: `classic` (the model fills `Verdict`, including *strength*) or `checklist`
+  (the model fills `Checklist` with plain facts and `checklist.py` decides *strong*; needs migration 006, and the run
+  checks the columns before trading). The planner fills `TradePlan`. Telegram messages are never cut short. Screener/strategy
   thresholds are module-level constants at the top of this file.
 - **`rules.py`**: deterministic money logic. `size_trade()` applies the risk rules and sizes the position.
   `nudge_plan()` snaps near-miss stops/targets to the limit before `size_trade` runs. Risk constants live here.
@@ -66,7 +71,7 @@ Key invariants:
 
 ## Database
 
-The canonical SQL is in `sql/`: apply `schema.sql`, then `migration_001` … `migration_005` in order.
+The canonical SQL is in `sql/`: apply `schema.sql`, then `migration_001` … `migration_007` in order.
 All tables have RLS with no policies, so the public sees only the `public_*`
 views. Rollout order: run SQL on the test Supabase project, then on prod, then push the code that uses it.
 

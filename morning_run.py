@@ -380,7 +380,7 @@ Rules:
         else:
             say("   -> ON WATCHLIST (strong, bullish catalyst)")
             watchlist.append(symbol)
-    send_telegram(msg.analyst([(s, verdicts[s].reason) for s in watchlist], len(verdicts)))
+    send_telegram(msg.analyst([(s, verdicts[s].reason) for s in watchlist], len(verdicts), mode="classic"))
     return {"verdicts": verdicts, "watchlist": watchlist}
 
 
@@ -499,7 +499,10 @@ def analyze_news_checklist(state: State) -> dict:
             say(f"   {symbol}: ON WATCHLIST (strong, bullish: {verdicts[symbol].catalyst_type})")
         else:
             say(f"   {symbol}: not on the watchlist - {verdicts[symbol].checklist_notes}")
-    send_telegram(msg.analyst([(s, verdicts[s].reason) for s in watchlist], len(verdicts)))
+    labels = {s: f"{verdicts[s].catalyst_type.replace('_', ' ')} · {verdicts[s].event_status.replace('_', ' ')} · "
+                 f"{'figure in headline' if verdicts[s].has_number else 'no figure'}" for s in watchlist}
+    send_telegram(msg.analyst([(s, verdicts[s].reason, labels[s]) for s in watchlist], len(verdicts),
+                              dropped=dropped, mode="checklist"))
     return {"verdicts": verdicts, "watchlist": watchlist}
 
 
@@ -558,7 +561,7 @@ Rules:
         stop = round_to_tick(plan.stop)
         target = round_to_tick(plan.target)
         say(f"   model proposed: stop {plan.stop:.2f}, target {plan.target:.2f}  (rounded to NSE steps: {stop:.2f} / {target:.2f})")
-        reason = plan.reason.split("\n")[0][:200]
+        reason = " ".join(plan.reason.split())             # the whole reason, on one line
         say(f"   model's reason: {reason}")
 
         stop, target, nudges = nudge_plan(entry, stop, target, avg_range)       # a plan just outside the limits is moved inside
