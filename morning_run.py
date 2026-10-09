@@ -8,6 +8,7 @@ import os
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
 from email.utils import parsedate_to_datetime
@@ -23,10 +24,11 @@ from rules import (
     size_trade, nudge_plan, STARTING_BALANCE, RISK_PER_TRADE, MAX_POSITION_FRACTION,
     MIN_REWARD_RISK, MIN_STOP_RANGE_FRACTION, MAX_TARGET_RANGE_FRACTION,
 )
-from storage import start_run, save_run_details, mark_run, get_available_balance
+from storage import start_run, save_run_details, mark_run, get_available_balance, check_checklist_columns
 from llm_setup import build_llm, PROVIDER, MODEL
 import messages as msg
 from notify import send_telegram
+from checklist import Checklist, FRESH_DAYS, MAX_PER_SECTOR, build_watchlist, load_sectors
 
 load_dotenv()
 llm = build_llm()                                  # which model? see llm_setup.py
@@ -51,6 +53,10 @@ RUN_UNTIL = dtime(14, 30)     # too little of the day is left to reach a target 
 FORCE_RUN = os.getenv("FORCE_RUN", "").strip().lower() in {"1", "true", "yes"}   # testing only: skip the guard
 NSE_HOLIDAYS = {d.strip() for d in os.getenv("NSE_HOLIDAYS", "").split(",") if d.strip()}   # e.g. 2026-11-08,2026-11-24
 
+# Who decides "strong"?  classic = the model decides (as before).  checklist = the model answers plain facts and
+# checklist.py decides. The checklist needs sql/migration_006_checklist.sql applied first. Changing it needs a restart.
+ANALYST_MODE = os.getenv("ANALYST_MODE", "classic").strip().lower() or "classic"
+
 
 def say(message: str = "") -> None:
     if VERBOSE:
@@ -73,6 +79,7 @@ def load_universe() -> dict[str, str]:
 
 
 UNIVERSE = load_universe()
+SECTORS = load_sectors()                           # symbol -> sector, for the checklist analyst's sector rule
 
 
 # ----------------------------------------------------------------------------
@@ -85,6 +92,21 @@ class Verdict(BaseModel):
     catalyst_type: Literal["earnings", "broker_call", "block_deal", "sector_news", "other"]
     reason: str = Field(description="One or two sentences, based only on the headlines")
     source_numbers: list[int] = Field(description="Numbers of the headlines that support the reason, [] if none")
+
+
+@dataclass
+class CheckedVerdict:
+    """What the checklist analyst leaves behind for each stock, shaped like Verdict so the rest of the run
+    (planner, summary, saving) works with either. The last three fields are only filled by the checklist."""
+    has_catalyst: bool
+    bullish: bool
+    strength: str
+    catalyst_type: str
+    reason: str
+    source_numbers: list
+    event_status: str | None = None
+    has_number: bool | None = None
+    checklist_notes: str | None = None
 
 
 class TradePlan(BaseModel):
@@ -100,7 +122,7 @@ class State(TypedDict):
     prices: dict[str, float]
     avg_ranges: dict[str, float]
     headlines: dict[str, list[dict]]
-    verdicts: dict[str, Verdict]
+    verdicts: dict[str, Verdict | CheckedVerdict]
     watchlist: list[str]
     plans: list[dict]
     plan_log: list[dict]
@@ -363,6 +385,133 @@ Rules:
 
 
 # ----------------------------------------------------------------------------
+# Step 3, checklist version: the model answers plain facts, checklist.py decides what is strong
+# ----------------------------------------------------------------------------
+CHECKLIST_RULES = """Rules:
+- Answer facts only. Do not judge whether the stock is a good buy: that is decided elsewhere.
+- Use only the headlines below; each shows its date. Cite (source_numbers) only headlines that name this company and are not older than 3 days. "Likely includes", "may include" or a mention of the sector is NOT enough.
+- event_type is the single most important event in the headlines you cite:
+    earnings = the company's own results (profit, revenue, guidance)
+    order_win = the company wins an order, contract or deal from a customer
+    regulatory_approval = a regulator approves something (a drug, a licence, a clearance)
+    deal_or_acquisition = an acquisition, merger, demerger, or the purchase or sale of a stake or a business
+    broker_target = a named brokerage upgrades the stock or sets or raises a target price
+    block_deal = a block or bulk deal (alone it is neutral: one party sells while another buys)
+    dividend = a dividend, buyback, bonus issue or stock split
+    product_or_partnership = a product or service launch, a partnership or a collaboration
+    management_change = an appointment, resignation or retirement of executives or directors
+    sector_or_market_move = news about the sector or the whole market, not about this company specifically
+    other = anything else, or no specific event for this company ("top stocks to buy" lists, single-analyst tips, generic or old news)
+- status: happened = it already took place or was officially announced; expected = scheduled or upcoming ("to announce", "will report", "ahead of results"); rumour_or_opinion = "in talks", "may", "likely", or someone's view.
+- bullish: true only if the news points to upside for the share price today. A block deal is bullish only if the headline says more.
+- has_number: true if a cited headline states a concrete figure (profit growth, order value, target price)."""
+
+
+def checklist_prompt(company: str, change: float, rel_volume: float, numbered: str) -> str:
+    today = datetime.now(IST).strftime("%A, %d %B %Y")
+    return f"""You are a careful stock analyst. Today is {today}.
+{company} is up {change:.1f}% today on {rel_volume:.1f}x its normal volume.
+Fill in the checklist about this company, using ONLY these headlines.
+
+{CHECKLIST_RULES}
+
+{numbered}"""
+
+
+def ask_checklist(analyst, prompt: str):
+    """Ask the model. If the answer looks garbled (text leaking into the reason), try once more.
+    Returns None if it is garbled twice: that stock then gets no answer and cannot be strong (fail closed)."""
+    for attempt in range(2):
+        answer = analyst.invoke(prompt)
+        reason = answer.reason
+        garbled = len(reason) > 400 or "\n" in reason or "the user" in reason.lower()
+        if not garbled:
+            return answer
+        say(f"   (garbled answer from the model, attempt {attempt + 1} of 2)")
+    return None
+
+
+def checked_verdict(answer, decision, sector_drop=None, no_answer=None) -> CheckedVerdict:
+    """Turn the model's checklist answer and the code's decision into the record we keep for the stock.
+    sector_drop = (sector, kept_stock) if the sector rule removed it. no_answer = why the model gave no usable answer."""
+    notes = "; ".join(decision.failed) if decision.failed else None
+    if answer is None:
+        return CheckedVerdict(has_catalyst=False, bullish=False, strength="weak", catalyst_type="other",
+                              reason=no_answer or "No checklist answer", source_numbers=[], checklist_notes=notes)
+    claimed_event = answer.event_type != "other"
+    overruled = claimed_event and not decision.named_company          # same idea as the classic check
+    if sector_drop:
+        notes = f"strong by the rules, but dropped by the sector rule: same sector ({sector_drop[0]}) as {sector_drop[1]}"
+    return CheckedVerdict(
+        has_catalyst=claimed_event and answer.status == "happened" and decision.named_company and decision.cited_fresh,
+        bullish=answer.bullish,
+        strength="strong" if (decision.strong or sector_drop) else "weak",
+        catalyst_type=answer.event_type,
+        reason=("REJECTED by code: no cited headline names the company. " if overruled else "") + answer.reason,
+        source_numbers=answer.source_numbers,
+        event_status=answer.status, has_number=answer.has_number, checklist_notes=notes)
+
+
+def analyze_news_checklist(state: State) -> dict:
+    banner("STEP 3: ANALYST (checklist) - the model answers facts, code decides what is strong")
+    analyst = llm.with_structured_output(Checklist)
+    today = datetime.now(IST).date()
+    answers, no_answer = {}, {}
+    for symbol in state["stocks"]:
+        company = UNIVERSE[symbol]
+        change = state["changes"][symbol]
+        rel_volume = state["rel_volumes"][symbol]
+        titles = state["headlines"][symbol]
+        say(f"{symbol} ({company}): up {change:.1f}% on {rel_volume:.1f}x volume, {len(titles)} headlines")
+        if not titles:
+            say("   no headlines to judge, so no catalyst (model not asked)")
+            no_answer[symbol] = "No headlines found"
+            continue
+        numbered = "".join(f"[{i}] {h['text']}\n" for i, h in enumerate(titles, start=1))
+        prompt = checklist_prompt(company, change, rel_volume, numbered)
+        if SHOW_PROMPTS:
+            say("   ---- prompt sent to the model ----")
+            say(prompt)
+            say("   -------------------------------")
+        say("   asking the model...")
+        began = time.time()
+        answer = ask_checklist(analyst, prompt)
+        if answer is None:
+            say("   the model's answer was garbled twice, so this stock gets no answer")
+            no_answer[symbol] = "REJECTED by code: the model's answer was garbled twice"
+            continue
+        answers[symbol] = answer
+        say(f"   model answered in {time.time() - began:.1f}s: type={answer.event_type}, status={answer.status}, "
+            f"bullish={answer.bullish}, number={answer.has_number}")
+        say(f"   reason: {answer.reason}")
+        for n in answer.source_numbers:
+            if 1 <= n <= len(titles):
+                say(f"   cited headline: {titles[n - 1]['text']}")
+
+    watchlist, decisions, dropped = build_watchlist(state["stocks"], answers, state["headlines"], UNIVERSE, SECTORS, today)
+    sector_drops = {symbol: (sector, kept) for symbol, sector, kept in dropped}
+    verdicts = {}
+    say()
+    say("Code decisions:")
+    for symbol in state["stocks"]:
+        verdicts[symbol] = checked_verdict(answers.get(symbol), decisions[symbol], sector_drops.get(symbol), no_answer.get(symbol))
+        if symbol in watchlist:
+            say(f"   {symbol}: ON WATCHLIST (strong, bullish: {verdicts[symbol].catalyst_type})")
+        else:
+            say(f"   {symbol}: not on the watchlist - {verdicts[symbol].checklist_notes}")
+    send_telegram(msg.analyst([(s, verdicts[s].reason) for s in watchlist], len(verdicts)))
+    return {"verdicts": verdicts, "watchlist": watchlist}
+
+
+ANALYSTS = {"classic": analyze_news, "checklist": analyze_news_checklist}
+
+
+def analyst_step(state: State) -> dict:
+    """The graph's analyst node: whichever analyst ANALYST_MODE selects."""
+    return ANALYSTS[ANALYST_MODE](state)
+
+
+# ----------------------------------------------------------------------------
 # Step 4: trade planner (Gemini proposes, the rulebook decides)
 # ----------------------------------------------------------------------------
 def plan_trades(state: State) -> dict:
@@ -510,7 +659,7 @@ def preflight(state: State) -> dict:
         send_telegram(msg.balance_problem(error))
         return {"can_run": False, "market_note": "balance unavailable", "balance": 0.0}
     say(f"Available balance: {balance:,.2f} ({source})")
-    send_telegram(msg.run_started(now, balance, source, f"{PROVIDER} / {MODEL}"))
+    send_telegram(msg.run_started(now, balance, source, f"{PROVIDER} / {MODEL} · {ANALYST_MODE} analyst"))
     return {"can_run": True, "market_note": why, "balance": balance}
 
 
@@ -522,7 +671,7 @@ graph = StateGraph(State)
 graph.add_node("preflight_node", preflight)
 graph.add_node("screen_stocks_node", screen_stocks)
 graph.add_node("fetch_news_node", fetch_news)
-graph.add_node("analyze_news_node", analyze_news)
+graph.add_node("analyze_news_node", analyst_step)
 graph.add_node("plan_trades_node", plan_trades)
 graph.add_edge(START, "preflight_node")
 graph.add_conditional_edges("preflight_node", decide_after_preflight, {"go": "screen_stocks_node", "stop": END})
@@ -536,12 +685,27 @@ app = graph.compile()
 current = {"run_id": None}                                   # lets the crash handler below find the run
 
 
+def build_settings(balance: float) -> dict:
+    """The settings saved with the run, so every day can be traced back to the rules it ran under."""
+    settings = {"min_change": MIN_CHANGE, "min_rel_volume": MIN_REL_VOLUME, "max_candidates": MAX_CANDIDATES,
+                "max_positions": MAX_POSITIONS, "balance_at_start": balance,
+                "risk_per_trade": RISK_PER_TRADE, "max_position_fraction": MAX_POSITION_FRACTION,
+                "analyst_mode": ANALYST_MODE}
+    if ANALYST_MODE == "checklist":
+        settings.update({"fresh_days": FRESH_DAYS, "max_per_sector": MAX_PER_SECTOR})
+    return settings
+
+
 def main() -> None:
     started = time.time()
     started_at = datetime.now(IST)
-    print(f"Model: {PROVIDER} / {MODEL}")
+    if ANALYST_MODE not in ANALYSTS:                             # a typo in .env must stop us before anything is recorded
+        raise ValueError(f"ANALYST_MODE='{ANALYST_MODE}' is not valid; use one of: {', '.join(ANALYSTS)}")
+    print(f"Model: {PROVIDER} / {MODEL}   Analyst: {ANALYST_MODE}")
     run_id = start_run(started_at, f"{PROVIDER}:{MODEL}")        # the run is on record from the very start
     current["run_id"] = run_id
+    if ANALYST_MODE == "checklist":
+        check_checklist_columns()      # a run that cannot be saved can never be settled, so find out BEFORE trading
     result = app.invoke({"stocks": [], "changes": {}, "rel_volumes": {}, "prices": {}, "avg_ranges": {},
                          "headlines": {}, "verdicts": {}, "watchlist": [], "plans": [], "plan_log": [], "stats": {},
                          "balance": 0.0, "can_run": False, "market_note": ""})
@@ -576,9 +740,7 @@ def main() -> None:
         print(f"   Cash used {cost:,.0f} of {result['balance']:,.0f} (left {result['balance'] - cost:,.0f}); "
               f"worst case if every stop hits: -{sum(p['max_loss'] for p in plans):,.0f}")
 
-    settings = {"min_change": MIN_CHANGE, "min_rel_volume": MIN_REL_VOLUME, "max_candidates": MAX_CANDIDATES,
-                "max_positions": MAX_POSITIONS, "balance_at_start": result["balance"],
-                "risk_per_trade": RISK_PER_TRADE, "max_position_fraction": MAX_POSITION_FRACTION}
+    settings = build_settings(result["balance"])
     save_error = None
     try:                                                       # a saving problem must never lose the run's output
         if run_id is None:                                     # Supabase was unreachable at the start: try once more

@@ -54,6 +54,8 @@ class Checklist(BaseModel):
 class Decision:
     strong: bool
     failed: list = field(default_factory=list)       # plain-words reasons, empty when strong
+    named_company: bool = True                       # did a cited headline name the company?
+    cited_fresh: bool = True                         # was a cited headline that names it fresh (and dated)?
 
 
 # ------------------------------------------------------------------------------ small helpers
@@ -104,11 +106,12 @@ def evaluate(symbol: str, company: str, answer: Checklist, headlines: list, toda
 
     cited = [headlines[n - 1] for n in answer.source_numbers if 1 <= n <= len(headlines)]
     naming = [h for h in cited if mentions_company(symbol, company, h["text"])]
+    fresh = any(is_fresh(h, today) for h in naming)
     if not naming:
         failed.append("no cited headline names the company")
-    elif not any(is_fresh(h, today) for h in naming):
+    elif not fresh:
         failed.append(f"the cited headline is older than {FRESH_DAYS} days or has no date")
-    return Decision(strong=not failed, failed=failed)
+    return Decision(strong=not failed, failed=failed, named_company=bool(naming), cited_fresh=fresh)
 
 
 def apply_sector_cap(ranked_symbols: list, sectors: dict, max_per_sector: int = MAX_PER_SECTOR):

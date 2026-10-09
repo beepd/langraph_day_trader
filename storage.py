@@ -52,6 +52,30 @@ def mark_run(run_id, status: str, note: str | None = None, error: str | None = N
         log.warning("Could not update run #%s in Supabase: %s", run_id, exc)
 
 
+def _verdict_row(run_id: int, symbol: str, v, on_watchlist: bool) -> dict:
+    row = {
+        "run_id": run_id, "symbol": symbol,
+        "has_catalyst": v.has_catalyst, "bullish": v.bullish,
+        "strength": v.strength, "catalyst_type": v.catalyst_type,
+        "reason": v.reason, "cited_positions": v.source_numbers,
+        "overruled_by_code": (v.reason or "").startswith("REJECTED by code"),
+        "on_watchlist": on_watchlist,
+    }
+    if hasattr(v, "event_status"):          # a checklist verdict: its extra answers need migration 006 on the database
+        row.update({"event_status": v.event_status, "has_number": v.has_number, "checklist_notes": v.checklist_notes})
+    return row
+
+
+def check_checklist_columns() -> None:
+    """The checklist analyst saves three extra columns. Stop BEFORE any trading if the database does not have them yet,
+    because a run that cannot be saved cannot be settled."""
+    try:
+        get_client().table("verdicts").select("event_status, has_number, checklist_notes").limit(1).execute()
+    except Exception as error:
+        raise RuntimeError("The checklist analyst needs sql/migration_006_checklist.sql applied to this database "
+                           f"(could not read the new verdicts columns: {error})") from error
+
+
 def save_run_details(run_id: int, result: dict, settings: dict) -> None:
     """Save everything a finished run produced, then mark it 'finished'. If anything fails, it is marked 'failed'."""
     client = get_client()
@@ -71,14 +95,8 @@ def save_run_details(run_id: int, result: dict, settings: dict) -> None:
             "published_at": h["published_at"], "url": h["url"] or None,
         } for symbol, items in result["headlines"].items() for position, h in enumerate(items, start=1)]
 
-        verdict_rows = [{
-            "run_id": run_id, "symbol": symbol,
-            "has_catalyst": v.has_catalyst, "bullish": v.bullish,
-            "strength": v.strength, "catalyst_type": v.catalyst_type,
-            "reason": v.reason, "cited_positions": v.source_numbers,
-            "overruled_by_code": (v.reason or "").startswith("REJECTED by code"),
-            "on_watchlist": symbol in result["watchlist"],
-        } for symbol, v in result["verdicts"].items()]
+        verdict_rows = [_verdict_row(run_id, symbol, v, symbol in result["watchlist"])
+                        for symbol, v in result["verdicts"].items()]
 
         plan_rows = [{
             "run_id": run_id, "symbol": p["symbol"], "status": p["status"],
