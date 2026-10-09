@@ -35,7 +35,7 @@ Think of it as a very small trading desk made of four employees, each with one j
 | Employee | Job | AI or plain code? |
 |---|---|---|
 | **Screener** | Looks at the 100 biggest stocks and finds the ones moving today on unusual volume | Plain code |
-| **Analyst** | Reads each mover's headlines and answers: *is there a real, fresh reason for this move?* | LLM, double-checked by code |
+| **Analyst** | Reads each mover's headlines and answers: *is there a real, fresh reason for this move?* | LLM, double-checked by code. In `checklist` mode the LLM only answers facts and code decides |
 | **Planner** | Proposes a stop-loss and a target for each stock the analyst liked | LLM proposes, **a rulebook in code decides** |
 | **Settler** | After the close, replays the day's 5-minute prices and records what each trade would have done | Plain code |
 
@@ -50,8 +50,8 @@ flowchart TD
     S["Scheduler<br/>weekdays, 9:35 AM IST"] --> P0
     subgraph MORNING["Morning run (morning_run.py)"]
         P0["0. Preflight<br/>market open? balance from the database"] -->|open| P1["1. Screener<br/>Nifty 100: price and volume movers"]
-        P1 --> P2["2. News<br/>Google News headlines for the top movers"]
-        P2 --> P3["3. Analyst<br/>LLM judges each move, code double-checks"]
+        P1 --> P2["2. News<br/>Google News headlines for the top movers (plain code)"]
+        P2 --> P3["3. Analyst<br/>classic: LLM judges, code double-checks<br/>checklist: LLM answers facts, code decides"]
         P3 --> P4["4. Planner<br/>LLM proposes stop and target, rulebook decides"]
     end
     P0 -->|closed| SKIP["Recorded as a skipped day"]
@@ -86,12 +86,48 @@ passed, so the code scales the expected volume by `session_fraction()` instead o
 > *Example:* EXAMPLE Ltd. is up 2.8% at 9:35 on 3.8x volume, price ₹331.00, typical daily range ₹6.40
 > (the average of the last days' high minus low). It ranks in the top 10.
 
-### Step 2. News (plain code)
-For each mover, up to **5 headlines from the last 3 days** from Google News RSS (`"Company name" when:3d`). Each
-headline is dated, and the rupee sign is replaced by "Rs" because it once confused a model.
+### Step 2. News (plain code, `fetch_news`)
+For each of the (up to 10) movers the job asks **Google News RSS** for `"Company name" when:3d`, and keeps the first
+**5 headlines**. No AI is involved. For every headline it keeps five things:
 
-### Step 3. Analyst (LLM judges, code double-checks)
-For each stock the LLM sees the numbered headlines and must fill in a structured form (`Verdict`):
+| Kept | Used for |
+|---|---|
+| `text` | what the analyst sees: `(08 Oct) EXAMPLE Q2 profit up 28%`. The date is shown so the model can tell old from new, and the rupee sign is replaced by "Rs" because it once confused a model |
+| `title`, `source`, `url` | saved to the database (`headlines` table) so every verdict can be checked later |
+| `published_at` | the exact timestamp (India time). The **code** reads it in step 3 to decide freshness. The model is never trusted with dates |
+
+A failed search for one stock gives that stock an empty list; it never stops the run. Telegram says how many movers
+had headlines and names the ones that had none. A stock with no headlines cannot get a catalyst.
+
+**What this step does not do (yet).** It only reads *headline titles*. The article text behind them is not fetched.
+That was tested separately in `experiment_articles.py` (the "7a" experiment, a standalone script that touches no
+database and is not called by the morning run). Its findings so far:
+- readable article text exists behind about 90% of Google News links, and about 75% are *usable* (readable, fresh and
+  naming the company; Bing only about 40%). All 10 sample stocks were covered;
+- a source-quality list (`SOURCE_TIERS`, our judgment, not a measurement) and a freshness check were built and tested.
+
+The live run uses only the freshness idea, from `published_at`. Article text and source tiers are not wired in
+because headlines currently store only a source *name*, not a web domain. The report cards will tell us whether the
+extra work is worth it.
+
+### Step 3. Analyst (the model reads, code decides)
+This step has **two versions**, chosen by `ANALYST_MODE` in `.env` (default `classic`). Both produce the same thing:
+a verdict per stock and a **watchlist** of the stocks that are strong enough to plan a trade for. Everything after
+this step (planner, rulebook, saving, settlement) works the same with either.
+
+| | `classic` | `checklist` |
+|---|---|---|
+| The model is asked | one judgment: is this catalyst `strong` or `weak`? | plain factual questions (what happened, has it happened, is it bullish, is there a number) |
+| Who decides *strong* | the model, then code double-checks the citation | **code**, with fixed rules in `checklist.py` |
+| Why it exists | the original design | the classic analyst was lenient and inconsistent (see Findings). Facts are easier for a model to get right than judgment |
+| Extra database columns | none | `event_status`, `has_number`, `checklist_notes` (migration 006) |
+
+Switching is a `.env` change plus `sudo systemctl restart day-trader`; switching back is the same. With `checklist` the
+run first checks that migration 006 is applied and **stops before trading** if it is not, because a run that cannot be
+saved can never be settled.
+
+#### 3a. Classic analyst (`analyze_news`)
+For each stock the model sees the numbered headlines and fills in a structured form (`Verdict`):
 
 | Field | Meaning |
 |---|---|
@@ -103,14 +139,60 @@ For each stock the LLM sees the numbered headlines and must fill in a structured
 
 Then plain code checks the model's work:
 1. **The citation must name the company.** If no cited headline contains the company name (or symbol), `has_catalyst`
-   is overruled to `False`.
+   is overruled to `False` and the reason is marked `REJECTED by code`.
 2. **Garbled answers are retried** (text leaking into the reason, over 400 characters) and rejected after two tries.
 3. **Only `strong` + `bullish` + real catalyst** reaches the *watchlist*.
 
-> *Example headlines:* `[1] (08 Oct) EXAMPLE Q2 profit up 28%, JPMorgan raises target to Rs 1,150` →
+> *Example:* `[1] (08 Oct) EXAMPLE Q2 profit up 28%, JPMorgan raises target to Rs 1,150` →
 > `has_catalyst=True, bullish=True, strength=strong, catalyst_type=broker_call, source_numbers=[1]` → on the watchlist.
 > A headline like `[2] (08 Oct) EXAMPLE set to announce first interim dividend` describes something that has *not
-> happened yet*; it should be `weak`. (This is a known weak spot, see Findings.)
+> happened yet*; it should be `weak`, but the classic model sometimes calls it strong. This weak spot is why the
+> checklist version exists.
+
+#### 3b. Checklist analyst (`analyze_news_checklist` + `checklist.py`)
+**Part 1: the model fills in a fact sheet (`Checklist`)** for each stock that has headlines (a stock with none is not
+sent to the model). It is told to answer facts only, never to judge whether the stock is a good buy, and to cite
+only headlines that name the company and are not older than 3 days.
+
+| Field | What the model answers |
+|---|---|
+| `event_type` | the single most important event, one of 11: `earnings`, `order_win`, `regulatory_approval`, `deal_or_acquisition`, `broker_target` (these five *can* be strong), `block_deal`, `dividend`, `product_or_partnership`, `management_change`, `sector_or_market_move`, `other` |
+| `status` | `happened` (done or officially announced), `expected` ("to announce", "ahead of results") or `rumour_or_opinion` ("in talks", "may", someone's view) |
+| `bullish` | true only if the news points to upside today |
+| `has_number` | a cited headline states a concrete figure (profit growth, order value, target price). Recorded, not required |
+| `reason`, `source_numbers` | one or two sentences, and the headlines relied on |
+
+The definitions of each event type are written out in the prompt (`CHECKLIST_RULES` in `morning_run.py`), so the
+model does not have to guess what "order win" means. Garbled answers are retried once; if garbled twice the stock
+gets no answer and so cannot be strong.
+
+**Part 2: code decides (`checklist.py`).** A stock is **strong only if all four hold**:
+1. its `event_type` is one of the five that can be strong,
+2. `status` is `happened`,
+3. it is `bullish`,
+4. a cited headline **names the company** *and* that same headline is **at most 3 days old**. The code reads the age
+   from `published_at`; a missing or unreadable date counts as not fresh.
+
+Each failed rule is written down in plain words (`checklist_notes`), for example `status is 'expected', not
+'happened'` or `the cited headline is older than 3 days or has no date`, so a "weak" verdict can always be explained.
+
+**Part 3: the sector rule.** Many stocks move together on one story (for example five IT stocks after one IT
+company's results), and they would all hit their stops together. So of the strong stocks, **at most one per sector**
+is kept (`MAX_PER_SECTOR`), in screener-rank order. The sector is the Industry column of `nifty100.csv`. A stock that
+is strong by the rules but removed by this rule is saved as `strong` with `on_watchlist = false` and a note
+(`same sector (Information Technology) as TCS`), so the report card can still follow how it did. Telegram lists
+these too.
+
+> *Example:* five movers. EXAMPLE (IT): `[1] (09 Oct) EXAMPLE Q2 profit rises 9%` → `earnings`, `happened`,
+> bullish, headline names the company and is a day old → **strong**. SISTER (also IT, ranked lower): same event type
+> and status → strong by the rules but **dropped** by the sector rule. HEALTHCO: `regulatory_approval`, `happened`
+> → **strong**, a different sector, kept. BANKCO: a broker target, but the cited headline is 6 days old → **weak**
+> (`older than 3 days`). TIPSCO: "top stocks to buy today" → `other` → **weak**. Watchlist: EXAMPLE and HEALTHCO.
+
+**What is saved.** Either way every stock gets a row in `verdicts` (including the weak ones and why). The checklist
+mode adds the three extra columns, and the `analysis_group_comparison.sql` query shows the sector-dropped stocks as
+their own group. To judge whether checklist beats classic, compare their report cards over several weeks
+(`settings` on each run records which mode and which numbers it ran with).
 
 ### Step 4. Planner (LLM proposes, the rulebook decides)
 For each watchlist stock, in screener-rank order, the LLM is asked for a **stop-loss** and a **target**. The prompt asks
@@ -176,7 +258,7 @@ can be graded afterwards with `python backfill_report_cards.py` (Yahoo keeps abo
 ### Telegram
 Every step sends a message: run started (with the model name and balance), screener, news, analyst, trade plans,
 run complete, and in the evening the settlement summary with one report-card line. Messages are plain HTTPS calls
-(no Telegram library), long messages are split, tokens are never logged, and `TELEGRAM_ENABLED=0` mutes everything.
+(no Telegram library), long messages are split into several (never cut short), tokens are never logged, and `TELEGRAM_ENABLED=0` mutes everything.
 Keep the chat **private**: it shows specific stocks and prices.
 
 ## Design principles
@@ -400,8 +482,8 @@ Early observations (a handful of days, so **treat as hints, not conclusions**):
 - Holidays must be listed by hand.
 - Results from a handful of days are statistically meaningless.
 
-Tidy-ups still open: the planner's reason text is cut at 200 characters; the end-of-run summary does not show the
-"adjusted by the rulebook" marker; the dashboard's `config.toml` must sit
+Tidy-ups still open: the end-of-run summary printed in the terminal does not show the "adjusted by the rulebook"
+marker (Telegram does); the dashboard's `config.toml` must sit
     in `dashboard/.streamlit/` for Streamlit to pick it up.
 
 ## Roadmap
