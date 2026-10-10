@@ -12,3 +12,4 @@ streamlit
 langchain-openai
 trafilatura
 googlenewsdecoder
+markdown
