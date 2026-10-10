@@ -37,7 +37,8 @@ def behaviour(mode, total, without, judged, strong, onwl, over, dropped, acc, re
     return {"candidates": {"total": total, "without_headlines": without},
             "analyst": {"mode": mode, "judged": judged, "strong": strong, "on_watchlist": onwl, "overruled_by_code": over, "strong_but_dropped": dropped},
             "planner": {"accepted": acc, "rejected": rej, "skipped": skipped, "nudged": nudged, "rejected_reasons": list(reasons)},
-            "positions": {"target_hits": tgt, "stop_hits": stops, "stop_hits_within_60_min": quick, "closed_at_end": close, "same_sector": same or {}},
+            "positions": {"target_hits": tgt, "stop_hits": stops, "stop_hits_within_60_min": quick, "closed_at_end": close, "same_sector": same or {},
+                          "same_sector_pnl": {k: round(sum(x["pnl"] for x in v), 2) for k, v in (same or {}).items()}},
             "known_limitations": ["x"]}
 MON = behaviour("classic", 10, 2, 8, 5, 3, 1, 0, 2, 1, 1, 2, 1, 1, 1, 0, reasons=[{"symbol": "X", "reason": "stop too close"}])
 THU = behaviour("checklist", 10, 1, 9, 4, 2, 0, 1, 2, 0, 0, 1, 0, 1, 0, 1, same={"Information Technology": [
@@ -118,14 +119,16 @@ check("candidates and analyst counts are added up", a["candidates"] == {"total":
 check("planner counts are added up, rejected reasons keep their date",
       (a["planner"]["accepted"], a["planner"]["rejected"], a["planner"]["skipped"], a["planner"]["nudged"]) == (4, 1, 1, 3)
       and a["planner"]["rejected_reasons"] == [{"date": "2026-10-05", "symbol": "X", "reason": "stop too close"}])
-check("position counts are added up", {k: v for k, v in a["positions"].items() if k != "same_sector_days"}
+check("position counts are added up", {k: v for k, v in a["positions"].items() if k not in ("same_sector_days", "same_sector_pnl_total")}
       == {"target_hits": 1, "stop_hits": 2, "stop_hits_within_60_min": 1, "closed_at_end": 1})
+check("stocks held together in one sector: their rupee total per day and for the week (-250 - 100 = -350)",
+      a["positions"]["same_sector_days"][0]["pnl_total"] == -350.0 and a["positions"]["same_sector_pnl_total"] == -350.0)
 check("the day with two trades in one sector is listed with its date", len(a["positions"]["same_sector_days"]) == 1
       and a["positions"]["same_sector_days"][0]["date"] == "2026-10-08" and a["positions"]["same_sector_days"][0]["sector"] == "Information Technology"
       and [x["symbol"] for x in a["positions"]["same_sector_days"][0]["trades"]] == ["D", "E"])
 check("the known limitations come through", a["known_limitations"] and "headline titles" in " ".join(a["known_limitations"]))
 check("the summary prints the app lines", "APP BEHAVIOUR (week):" in bw.summary_text(bw.build_week_facts(DAYS, POST, normal_history(), TODAY))
-      and "same sector on 2026-10-08: Information Technology D stop_hit, E closed_at_end" in bw.summary_text(bw.build_week_facts(DAYS, POST, normal_history(), TODAY)))
+      and "same sector on 2026-10-08: Information Technology D stop_hit, E closed_at_end (together -350.00)" in bw.summary_text(bw.build_week_facts(DAYS, POST, normal_history(), TODAY)))
 
 # ---------------------------------------------------------------- 3. awkward weeks
 print("3. Awkward weeks")

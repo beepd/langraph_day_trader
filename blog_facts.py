@@ -193,7 +193,8 @@ def _behaviour(raw: dict, facts: dict, verdicts: dict) -> dict:
                       "stop_hits_within_60_min": sum(1 for r in stops if r.get("minutes_in_trade") is not None
                                                      and r["minutes_in_trade"] <= QUICK_STOP_MINUTES),
                       "closed_at_end": sum(1 for r in done if r["outcome"] == "closed_at_end"),
-                      "same_sector": same_sector},
+                      "same_sector": same_sector,
+                      "same_sector_pnl": {sector: round(sum(t["pnl"] or 0 for t in rows), 2) for sector, rows in same_sector.items()}},
         "known_limitations": list(KNOWN_LIMITATIONS),
     }
 

@@ -166,8 +166,10 @@ def _behaviour(week: list):
         "planner": {**{k: total("planner", k) for k in ("accepted", "rejected", "skipped", "nudged")},
                     "rejected_reasons": [{"date": b["market_date"], **r} for b in days for r in b["app_behaviour"]["planner"]["rejected_reasons"]]},
         "positions": {**{k: total("positions", k) for k in ("target_hits", "stop_hits", "stop_hits_within_60_min", "closed_at_end")},
-                      "same_sector_days": [{"date": b["market_date"], "sector": sector, "trades": rows}
-                                           for b in days for sector, rows in b["app_behaviour"]["positions"]["same_sector"].items()]},
+                      "same_sector_days": [{"date": b["market_date"], "sector": sector, "trades": rows,
+                                            "pnl_total": b["app_behaviour"]["positions"]["same_sector_pnl"][sector]}
+                                           for b in days for sector, rows in b["app_behaviour"]["positions"]["same_sector"].items()],
+                      "same_sector_pnl_total": round(sum(v for b in days for v in b["app_behaviour"]["positions"]["same_sector_pnl"].values()), 2)},
         "known_limitations": list(KNOWN_LIMITATIONS),
     }
 
@@ -289,7 +291,8 @@ def summary_text(facts: dict) -> str:
         p = a["positions"]
         lines.append(f"  stops {p['stop_hits']} ({p['stop_hits_within_60_min']} within 60 min), targets {p['target_hits']}, 3:15 closes {p['closed_at_end']}")
         for d in p["same_sector_days"]:
-            lines.append(f"  same sector on {d['date']}: {d['sector']} " + ", ".join(f"{t['symbol']} {t['outcome']}" for t in d["trades"]))
+            lines.append(f"  same sector on {d['date']}: {d['sector']} " + ", ".join(f"{t['symbol']} {t['outcome']}" for t in d["trades"])
+                         + f" (together {d['pnl_total']:+,.2f})")
     return "\n".join(lines)
 
 

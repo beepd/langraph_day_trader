@@ -202,7 +202,7 @@ check("planner: 2 accepted, 1 rejected, 1 skipped, 2 nudged (one accepted, one r
 check("a rejected plan keeps its symbol and a reason cut to 140 characters", ab["planner"]["rejected_reasons"][0]["symbol"] == "EEE"
       and len(ab["planner"]["rejected_reasons"][0]["reason"]) == 140)
 check("positions: 1 target, 1 stop (hit after 50 minutes, so a quick stop-out), no 3:15 close, no shared sector",
-      ab["positions"] == {"target_hits": 1, "stop_hits": 1, "stop_hits_within_60_min": 1, "closed_at_end": 0, "same_sector": {}})
+      ab["positions"] == {"target_hits": 1, "stop_hits": 1, "stop_hits_within_60_min": 1, "closed_at_end": 0, "same_sector": {}, "same_sector_pnl": {}})
 trades = {t["symbol"]: t for t in facts_for(trading_day_db())["trades"]}
 check("minutes in trade: 90 for the target trade, 50 for the stop trade", trades["AAA"]["result"]["minutes_in_trade"] == 90
       and trades["BBB"]["result"]["minutes_in_trade"] == 50)
@@ -211,6 +211,8 @@ shared = dict(INFO, BBB={"company": "Beta Ltd.", "sector": "Information Technolo
 same = bf.collect_day_facts(date.fromisoformat(DAY), client=Fake(trading_day_db()), info=shared)["app_behaviour"]["positions"]["same_sector"]
 check("two trades in one sector are reported with their outcomes", same == {"Information Technology": [
       {"symbol": "AAA", "outcome": "target_hit", "pnl": 576.0}, {"symbol": "BBB", "outcome": "stop_hit", "pnl": -200.0}]})
+same_pnl = bf.collect_day_facts(date.fromisoformat(DAY), client=Fake(trading_day_db()), info=shared)["app_behaviour"]["positions"]["same_sector_pnl"]
+check("...and their rupee total (576 - 200 = 376)", same_pnl == {"Information Technology": 376.0})
 slow = trading_day_db(); slow["trade_results"][1]["exit_time"] = "2026-10-09T06:00:00+00:00"            # 115 minutes after the start
 check("a stop hit after 60 minutes is not a quick stop-out", facts_for(slow)["app_behaviour"]["positions"]["stop_hits_within_60_min"] == 0)
 check("skipped, failed and no-run days have no behaviour block", facts_for({"runs": [{"id": 3, "market_date": DAY, "status": "skipped"}]})["app_behaviour"] is None

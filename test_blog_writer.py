@@ -1,4 +1,5 @@
 """The blog writer and its checks (blog_writer.py), with a fake model (no network, no database). Run:  python test_blog_writer.py"""
+import json
 import sys
 sys.path.insert(0, ".")
 from datetime import date
@@ -68,7 +69,7 @@ print("2. The other checks")
 def good_daily():
     words = " ".join(["The bot bought on recorded reasons and two stocks ended with a small gross gain."] * 6)
     return {"title": "NSE paper trading: 9 October 2026", "meta_description": "A paper-trading diary of one NSE day with fake money.",
-            "body_markdown": "This is a simulation with fake money. Gross result: ₹100.00.\n\n## The trades\n\n" + words + "\n\n## One idea to test next\n\n" + words}
+            "body_markdown": "I built a trading bot that executes simulated trades with fake money, and the day ended with a gross result of ₹100.00.\n\n## The trades\n\n" + words + "\n\n## One idea to test next\n\n" + words}
 check("a good draft passes", w.check_draft(good_daily(), DAY, "daily") == [])
 d = good_daily(); d["title"] = "x" * 80
 check("a title over 70 characters fails", any("title" in p for p in w.check_draft(d, DAY, "daily")))
@@ -76,12 +77,41 @@ d = good_daily(); d["meta_description"] = "y" * 200
 check("a meta description over 160 characters fails", any("meta description" in p for p in w.check_draft(d, DAY, "daily")))
 d = good_daily(); d["body_markdown"] = "This is a simulation with fake money. Short."
 check("a text that is too short fails", any("words" in p for p in w.check_draft(d, DAY, "daily")))
-d = good_daily(); d["body_markdown"] = d["body_markdown"].replace("simulation with fake money", "diary")
-check("not saying it is a simulation fails", any("simulation" in p for p in w.check_draft(d, DAY, "daily")))
+d = good_daily(); d["body_markdown"] = d["body_markdown"].replace("executes simulated trades with fake money", "does clever things")
+check("not saying in the first paragraph that it is simulated fails", any("first paragraph must say" in p for p in w.check_draft(d, DAY, "daily")))
+d = good_daily(); d["body_markdown"] = d["body_markdown"].replace("I built a trading bot", "The trading bot was built")
+check("an opening that does not start with 'I' or 'My' fails", any("start with 'I' or 'My'" in p for p in w.check_draft(d, DAY, "daily")))
+d = good_daily(); d["body_markdown"] = d["body_markdown"].replace("ended with a gross result", "ended with a gross result, and I want to be clear that five trades prove nothing,")
+check("hedging such as 'I want to be clear ... prove nothing' fails", len([p for p in w.check_draft(d, DAY, "daily") if "no hedging" in p]) == 2)
+d = good_daily(); d["body_markdown"] += "\n\nThe sample is too small to say anything, a small sample."
+check("sample-size hedges fail", len([p for p in w.check_draft(d, DAY, "daily") if "no hedging" in p]) >= 2)
 d = good_daily(); d["body_markdown"] += "\n\nThe stock will rise tomorrow, you should buy."
 check("a prediction or advice fails", len([p for p in w.check_draft(d, DAY, "daily") if "no advice" in p]) == 2)
 d = good_daily(); d["body_markdown"] += "\n\nThe bot felt confident and was excited."
 check("feelings attributed to the bot fail", len([p for p in w.check_draft(d, DAY, "daily") if "no recorded feelings" in p]) == 2)
+d = good_daily(); d["body_markdown"] += "\n\nThe analyst ran in classic mode and the planner nudged one stock onto the watchlist."
+check("internal app names fail (classic mode, planner, nudged, watchlist)", len([p for p in w.check_draft(d, DAY, "daily") if "internal name" in p]) >= 4)
+d = good_daily(); d["body_markdown"] += "\n\nThe setup was broker_call."
+check("code-style names with underscores fail", any("code-style" in p for p in w.check_draft(d, DAY, "daily")))
+view = w.writer_view({"run": {"analyst_mode": "classic"}, "app_behaviour": {"analyst": {"mode": "classic", "judged": 5}}, "trades": [{"setup": "broker_call"}], "analyst_mode_by_day": {"x": "classic"}})
+check("the writer never sees the analyst mode", "classic" not in json.dumps(view) and "analyst_mode" not in json.dumps(view) and view["app_behaviour"]["analyst"] == {"judged": 5})
+check("the writer sees setups in plain words", view["trades"][0]["setup"] == "broker target change")
+check("the prompt tells the model to use plain words", "PLAIN WORDS" in w.build_prompt(DAY, "daily") and '"classic"' not in w.build_prompt(DAY, "daily").split("FACTS")[1].split("RULES")[0])
+a_d = w.assemble("Opening.\n\n## The trades\n\ntext", DAY, "daily"); a_w = w.assemble("Opening.\n\n## x\n\ntext", WEEK, "weekly")
+check("a fixed 'how these numbers are measured' note is added by code (daily and weekly)", "How these numbers are measured" in a_d and "Nifty 50" in a_d
+      and "Maximum drawdown" in a_w and "Profit factor" in a_w and a_w.index("How these numbers are measured") < a_w.index(w.DISCLOSURE))
+pw = w.build_prompt(DAY, "daily"); pf = w.build_prompt(dict(DAY, market_date="2026-10-13"), "daily")
+check("a post before 12 October is told the sector limit did not exist yet", "NO limit per sector" in pw and "BEFORE that date" in pw and "on or after that date" in pf)
+d = good_daily(); d["body_markdown"] += "\n\nAll other rules will remain unchanged to isolate the effect."
+check("claiming everything else stays unchanged fails for a post before the rule change", any("do not claim the sector limit" in p for p in w.check_draft(d, DAY, "daily")))
+check("the same words are fine for a post after the rule change", not any("do not claim" in p for p in w.check_draft(d, dict(DAY, market_date="2026-10-13"), "daily")))
+check("the prompt says the rating step also changes on 12 October", "cannot isolate the sector limit" in pw)
+lab = list(w.LABEL_PLAIN)[0]
+check("after 12 October the dropped-stocks label names the sector limit", "same sector" in json.dumps(w.writer_view({"label": lab}, True)) and "ALREADY in force" in pf)
+check("the confusing 'one-per-sector rule' label is rewritten for the model", "one-per-sector rule" not in json.dumps(w.writer_view({"label": list(w.LABEL_PLAIN)[0]})))
+check("the prompt separates news catalysts from setups and bans causal claims", "NEWS, NOT CHART SIGNALS" in w.build_prompt(DAY, "daily") and "CAUSE AND SAMPLE" in w.build_prompt(DAY, "daily"))
+d = good_daily(); d["body_markdown"] += "\n\nThe analyst kept 27 stocks worth watching closely."
+check("'the analyst' and 'worth watching' are caught as jargon", len([p for p in w.check_draft(d, DAY, "daily") if "internal name" in p]) >= 2)
 d = good_daily(); d["body_markdown"] += "\n\n| a | b |\n|---|---|"
 check("a table written by the model fails", any("tables" in p for p in w.check_draft(d, DAY, "daily")))
 d = good_daily(); d["body_markdown"] += "\n\nI made ₹9,999 in total."
@@ -91,27 +121,31 @@ check("a weekly post has a longer length range", w.check_draft(good_daily(), WEE
 # ---------------------------------------------------------------- 3. the tables (built by code)
 print("3. The tables")
 dt = w.daily_tables(DAY)
-check("daily table: header, one row per trade, formatted money", dt.startswith("| Stock | Setup | Result | Exit (IST) | Gross P&L | R |")
-      and "| A | earnings | target hit | 10:30 | +₹300.00 | +1.50R |" in dt and "| B | earnings | stop hit | 10:30 | −₹200.00 | -1.00R |" in dt)
-check("daily table: day total with the Nifty, labelled gross", "**Day total (gross):** +₹100.00 (+0.10% of the starting balance). Nifty over the same window: +0.20%." in dt)
+check("daily table: header, one row per trade, formatted money", dt.startswith("| Stock | News catalyst | Result | Exit (IST) | Gross P&L | R |")
+      and "| A | earnings | target hit | 10:30 | +₹300.00 | +1.50R |" in dt and "| B | earnings | stop hit | 10:30 | −₹200.00 | −1.00R |" in dt)
+check("daily table: day total with the Nifty, labelled gross", "**Day total (gross):** +₹100.00 (+0.10% of the starting balance). Nifty 50 over the same window: +0.20%." in dt)
 check("a day with no trades has no table", w.daily_tables(dict(DAY, trades=[])) == "")
 wt = w.weekly_tables(WEEK)
 check("weekly days table has five rows", sum(1 for line in wt.splitlines() if line[:2] == "| " and line.split("|")[1].strip()[:3] in ("Mon", "Tue", "Wed", "Thu", "Fri")) == 5
-      and "| Mon 10-05 | 1 | 1 / 0 | +₹300.00 | +0.20% |" in wt)
+      and "| Mon 5 Oct | 1 | 1 / 0 | +₹300.00 | +0.20% |" in wt)
 check("weekly stats table: this week and since the start side by side", "| Gross P&L | +₹550.00 | +₹550.00 |" in wt
       and "| Win rate | 60.0% | 60.0% |" in wt and "| Starting balance | ₹100,000.00 | ₹100,000.00 |" in wt)
 check("weekly stats: profit factor and drawdown are formatted", "| Profit factor | 2.83 | 2.83 |" in wt and "| Maximum drawdown (end-of-day balances) | 0.20% (₹200.00) | 0.20% (₹200.00) |" in wt)
-check("a small sample is labelled under the table", "Small sample" in wt)
+check("no small-sample line is added to the tables (the fixed notice covers it)", "Small sample" not in wt and "small sample" not in wt.lower())
 holiday = dict(WEEK, days=[dict(WEEK["days"][0], status="skipped", pnl_gross=None, pnl_pct_of_start=None, note="market holiday")] + WEEK["days"][1:])
-check("a holiday row shows its note", "| Mon 10-05 | – | – | skipped (market holiday) | – |" in w.weekly_tables(holiday))
+check("a holiday row shows its note", "| Mon 5 Oct | – | – | skipped (market holiday) | – |" in w.weekly_tables(holiday))
 
 # ---------------------------------------------------------------- 4. the prompt
 print("4. The prompt")
 p = w.build_prompt(DAY, "daily")
-check("the prompt holds the facts, the rules and the daily structure", '"market_date": "2026-10-09"' in p and "NUMBERS." in p and "How the app behaved" in p
-      and "One idea to test next" in p and "APP RULES" in p)
-check("the weekly prompt has the weekly structure", "What I will test next week" in w.build_prompt(WEEK, "weekly") and "Best and toughest trade" in w.build_prompt(WEEK, "weekly"))
-check("the prompt tells the model not to reveal who the author is", "Do not mention any job, employer, city or background" in p)
+check("the prompt holds the facts, the rules and the daily structure", '"market_date": "2026-10-09"' in p and "NUMBERS." in p and "How the bot behaved" in p
+      and "An idea to test" in p and "APP RULES" in p)
+check("the weekly prompt has the weekly structure", "The experiment for next week" in w.build_prompt(WEEK, "weekly") and "Best and toughest trade" in w.build_prompt(WEEK, "weekly"))
+check("the prompt tells the model not to reveal who the author is", "job, employer, city, age or background" in " ".join(p.split()))
+check("the prompt asks for a confident first-person opening with an example", "must start with \"I\" or \"My\"" in p and "I built an AI-powered trading bot" in p)
+check("the prompt forbids hedging and claims of skill", "prove nothing" in p and "beat the\n   market" in p)
+check("the prompt asks for ₹ with two decimals", "₹1,039.35" in p)
+check("the prompt steers the idea to the biggest effect, e.g. sector clustering", "same_sector_pnl" in p and "largest effect" in p)
 
 # ---------------------------------------------------------------- 5. writing, retrying, refusing
 print("5. write_post")
@@ -130,7 +164,7 @@ r = w.write_post(DAY, make_generate([good_daily()]), "daily")
 check("a good draft: ok, one try, no problems", r["ok"] and r["tries"] == 1 and r["problems"] == [] and len(calls) == 1)
 body = r["body_markdown"]
 check("assembled: first paragraph, then the table, then the rest, then the disclosure",
-      body.index("This is a simulation") < body.index("| Stock |") < body.index("## The trades") < body.index("Simulation notice"))
+      body.index("I built a trading bot") < body.index("| Stock |") < body.index("## The trades") < body.index("Simulation notice"))
 check("the disclosure is the fixed code text", body.endswith(w.DISCLOSURE) and "written by an AI" in body)
 check("title and description are kept", r["title"].startswith("NSE paper trading") and r["meta_description"])
 
@@ -160,8 +194,8 @@ r = w.write_post(dict(WEEK, complete=False, warnings=["2026-10-09: no run record
 check("an incomplete week is refused with the warnings", "incomplete" in r["refused"] and "no run recorded" in r["refused"] and calls == [])
 
 weekly_text = " ".join(["The week was small and the bot stayed inside its rules."] * 15)
-weekly_draft = {"title": "NSE paper trading: week of 5-9 October 2026", "meta_description": "One week of a paper-trading bot on the NSE, with fake money.",
-                "body_markdown": "A simulation with fake money. Gross result ₹550.00, 5 trades.\n\n## What the numbers say\n\n" + weekly_text + "\n\n## What I will test next week\n\n" + weekly_text + "\n\n" + weekly_text}
+weekly_draft = {"title": "NSE trading bot diary: 5-9 October 2026", "meta_description": "One week of a trading bot on the NSE, simulated with fake money.",
+                "body_markdown": "My trading bot executes simulated trades with fake money, and this week it ended with a gross result of ₹550.00 over 5 trades.\n\n## What the numbers say\n\n" + weekly_text + "\n\n## What I will test next week\n\n" + weekly_text + "\n\n" + weekly_text}
 r = w.write_post(WEEK, make_generate([weekly_draft]), "weekly")
 check("a weekly post passes and has both tables", r["ok"] and "| Day | Trades |" in r["body_markdown"] and "| Measure | This week |" in r["body_markdown"])
 
