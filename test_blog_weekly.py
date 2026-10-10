@@ -13,7 +13,7 @@ def check(name, condition):
 
 
 # ---------------------------------------------------------------- hand-made daily bundles (the shape blog_facts produces)
-def day(iso, start=None, trades=(), status="traded", note=None, nifty=0.0, others=()):
+def day(iso, start=None, trades=(), status="traded", note=None, nifty=0.0, others=(), beh=None):
     """trades = (symbol, setup, outcome, pnl, planned max loss). Skipped / no-run days have start=None."""
     d = date.fromisoformat(iso)
     built, total = [], 0.0
@@ -30,16 +30,27 @@ def day(iso, start=None, trades=(), status="traded", note=None, nifty=0.0, other
     wins = sum(1 for t in built if t["result"]["pnl"] > 0)
     loss = sum(1 for t in built if t["result"]["pnl"] < 0)
     return {"market_date": iso, "weekday": d.strftime("%A"), "day_status": status, "note": note, "money": money,
-            "trades": built, "others": list(others), "counts": {"trades": len(built), "winners": wins, "losers": loss, "flat": len(built) - wins - loss}}
+            "trades": built, "others": list(others), "app_behaviour": beh, "counts": {"trades": len(built), "winners": wins, "losers": loss, "flat": len(built) - wins - loss}}
+
+
+def behaviour(mode, total, without, judged, strong, onwl, over, dropped, acc, rej, skipped, nudged, tgt, stops, quick, close, same=None, reasons=()):
+    return {"candidates": {"total": total, "without_headlines": without},
+            "analyst": {"mode": mode, "judged": judged, "strong": strong, "on_watchlist": onwl, "overruled_by_code": over, "strong_but_dropped": dropped},
+            "planner": {"accepted": acc, "rejected": rej, "skipped": skipped, "nudged": nudged, "rejected_reasons": list(reasons)},
+            "positions": {"target_hits": tgt, "stop_hits": stops, "stop_hits_within_60_min": quick, "closed_at_end": close, "same_sector": same or {}},
+            "known_limitations": ["x"]}
+MON = behaviour("classic", 10, 2, 8, 5, 3, 1, 0, 2, 1, 1, 2, 1, 1, 1, 0, reasons=[{"symbol": "X", "reason": "stop too close"}])
+THU = behaviour("checklist", 10, 1, 9, 4, 2, 0, 1, 2, 0, 0, 1, 0, 1, 0, 1, same={"Information Technology": [
+    {"symbol": "D", "outcome": "stop_hit", "pnl": -250.0}, {"symbol": "E", "outcome": "closed_at_end", "pnl": -100.0}]})
 
 
 def normal_history():
     return [
         day("2026-10-02", 99800, [("H", "earnings", "target_hit", 200.0, 200.0)], nifty=0.1),            # the week before
-        day("2026-10-05", 100000, [("A", "earnings", "target_hit", 500.0, 250.0), ("B", "order_win", "stop_hit", -200.0, 200.0)], nifty=0.2),
+        day("2026-10-05", 100000, [("A", "earnings", "target_hit", 500.0, 250.0), ("B", "order_win", "stop_hit", -200.0, 200.0)], nifty=0.2, beh=MON),
         day("2026-10-06", 100300, [("C", "earnings", "stop_hit", -300.0, 300.0)], nifty=-0.5),
         day("2026-10-07", None, status="skipped", note="market holiday"),
-        day("2026-10-08", 100000, [("D", "other", "stop_hit", -250.0, 250.0), ("E", "earnings", "closed_at_end", -100.0, 250.0)], nifty=-1.3,
+        day("2026-10-08", 100000, [("D", "other", "stop_hit", -250.0, 250.0), ("E", "earnings", "closed_at_end", -100.0, 250.0)], nifty=-1.3, beh=THU,
             others=[{"symbol": "X", "group": "no_catalyst", "until_close": {"return_pct": -0.5, "whatif_return_pct": -0.7}}]),
         day("2026-10-09", 99650, [("F", "earnings", "target_hit", 400.0, 250.0), ("G", "broker_call", "closed_at_end", 100.0, 250.0)], nifty=0.6),
     ]
@@ -97,6 +108,25 @@ check("since the start: the earlier week's trade is counted, the week figures ar
       ct["net_pnl_gross"] == 350.0 and t["net_pnl_gross"] == 150.0)
 check("P&L is labelled gross and the definitions travel with the bundle", f["pnl_basis"].startswith("gross") and "win_rate" in f["definitions"])
 
+# ---------------------------------------------------------------- 2b. how the app behaved
+print("2b. App behaviour over the week")
+a = bw.build_week_facts(DAYS, POST, normal_history(), TODAY)["app_behaviour"]
+check("only the days that have a behaviour block are counted (Monday and Thursday)", a["days_covered"] == 2
+      and a["analyst_mode_by_day"] == {"2026-10-05": "classic", "2026-10-08": "checklist"})
+check("candidates and analyst counts are added up", a["candidates"] == {"total": 20, "without_headlines": 3}
+      and a["analyst"] == {"judged": 17, "strong": 9, "on_watchlist": 5, "overruled_by_code": 1, "strong_but_dropped": 1})
+check("planner counts are added up, rejected reasons keep their date",
+      (a["planner"]["accepted"], a["planner"]["rejected"], a["planner"]["skipped"], a["planner"]["nudged"]) == (4, 1, 1, 3)
+      and a["planner"]["rejected_reasons"] == [{"date": "2026-10-05", "symbol": "X", "reason": "stop too close"}])
+check("position counts are added up", {k: v for k, v in a["positions"].items() if k != "same_sector_days"}
+      == {"target_hits": 1, "stop_hits": 2, "stop_hits_within_60_min": 1, "closed_at_end": 1})
+check("the day with two trades in one sector is listed with its date", len(a["positions"]["same_sector_days"]) == 1
+      and a["positions"]["same_sector_days"][0]["date"] == "2026-10-08" and a["positions"]["same_sector_days"][0]["sector"] == "Information Technology"
+      and [x["symbol"] for x in a["positions"]["same_sector_days"][0]["trades"]] == ["D", "E"])
+check("the known limitations come through", a["known_limitations"] and "headline titles" in " ".join(a["known_limitations"]))
+check("the summary prints the app lines", "APP BEHAVIOUR (week):" in bw.summary_text(bw.build_week_facts(DAYS, POST, normal_history(), TODAY))
+      and "same sector on 2026-10-08: Information Technology D stop_hit, E closed_at_end" in bw.summary_text(bw.build_week_facts(DAYS, POST, normal_history(), TODAY)))
+
 # ---------------------------------------------------------------- 3. awkward weeks
 print("3. Awkward weeks")
 wins_only = [day("2026-10-05", 100000, [("A", "earnings", "target_hit", 300.0, 200.0), ("B", "earnings", "closed_at_end", 100.0, 200.0)])]
@@ -109,6 +139,7 @@ f = bw.build_week_facts(DAYS, POST, [day(d.isoformat(), None, status="skipped", 
 check("a week with no trades at all does not crash", f["week"]["equity"] is None and f["week"]["trades"]["trades"] == 0
       and f["week"]["trades"]["win_rate_pct"] is None and f["week"]["trades"]["best_trade"] is None and f["last_session"] is None)
 check("...and it still prints", "no settled days" in bw.summary_text(f))
+check("...and has no behaviour block", f["app_behaviour"] is None)
 flat = [day("2026-10-05", 100000, [("A", "earnings", "closed_at_end", 0.0, 200.0)])]
 check("a trade with exactly 0 profit is flat, not a win", bw.build_week_facts(DAYS, POST, flat, TODAY)["week"]["trades"]["flat"] == 1
       and bw.build_week_facts(DAYS, POST, flat, TODAY)["week"]["trades"]["winners"] == 0)

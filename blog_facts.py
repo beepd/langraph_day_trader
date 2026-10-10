@@ -46,6 +46,19 @@ GROUP_LABELS = {
     "no_catalyst": "no catalyst",
 }
 
+NUDGE_MARK = "[adjusted by the rulebook"          # morning_run.py puts this at the start of a plan's reason when it nudged a stop or target
+QUICK_STOP_MINUTES = 60                          # a stop hit within this many minutes of entry counts as a quick stop-out
+
+# The app's own known weaknesses (from the README), so the writer discusses real ones instead of inventing any.
+KNOWN_LIMITATIONS = [
+    "the analyst reads headline titles only; the article text behind them is not read yet",
+    "the day's positions are chosen by screener rank, not by the model",
+    "stops and targets are filled at exactly their price; brokerage, taxes and slippage are ignored",
+    "market holidays must be listed by hand (a backup check records a skipped day)",
+    "stocks in one sector often move on the same story, so several can hit their stops together",
+    "a few days of results prove nothing: luck can look like skill",
+]
+
 
 # ------------------------------------------------------------------------------ small helpers
 def load_company_info(path: str = "nifty100.csv") -> dict:
@@ -151,6 +164,40 @@ def _until_close(o: dict | None) -> dict | None:
             "whatif_return_pct": _num(o.get("std_return_pct"))}
 
 
+def _behaviour(raw: dict, facts: dict, verdicts: dict) -> dict:
+    """How the APP behaved today (not how the stocks did): plain counts the writer can base 'what to improve' on."""
+    with_headlines = {h["symbol"] for h in raw["headlines"]}
+    plans = raw["plans"]
+    rejected = [p for p in plans if p["status"] == "rejected"]
+    nudged = [p for p in plans if p["status"] in ("accepted", "rejected") and (p.get("gemini_reason") or "").startswith(NUDGE_MARK)]
+    by_sector = {}
+    for t in facts["trades"]:
+        if t.get("sector"):
+            by_sector.setdefault(t["sector"], []).append(t)
+    same_sector = {sector: [{"symbol": t["symbol"], "outcome": (t["result"] or {}).get("outcome"), "pnl": (t["result"] or {}).get("pnl")}
+                            for t in ts] for sector, ts in by_sector.items() if len(ts) > 1}
+    done = [t["result"] for t in facts["trades"] if t["result"]]
+    stops = [r for r in done if r["outcome"] == "stop_hit"]
+    return {
+        "candidates": {"total": len(raw["candidates"]),
+                       "without_headlines": sum(1 for c in raw["candidates"] if c["symbol"] not in with_headlines)},
+        "analyst": {"mode": facts["run"]["analyst_mode"], "judged": len(verdicts),
+                    "strong": sum(1 for v in verdicts.values() if v.get("strength") == "strong"),
+                    "on_watchlist": sum(1 for v in verdicts.values() if v.get("on_watchlist")),
+                    "overruled_by_code": sum(1 for v in verdicts.values() if v.get("overruled_by_code")),
+                    "strong_but_dropped": sum(1 for o in facts["others"] if o["group"] == "strong_dropped")},
+        "planner": {"accepted": sum(1 for p in plans if p["status"] == "accepted"), "rejected": len(rejected),
+                    "skipped": sum(1 for p in plans if p["status"] == "skipped"), "nudged": len(nudged),
+                    "rejected_reasons": [{"symbol": p["symbol"], "reason": (p.get("rejection_reason") or "")[:140]} for p in rejected]},
+        "positions": {"target_hits": sum(1 for r in done if r["outcome"] == "target_hit"), "stop_hits": len(stops),
+                      "stop_hits_within_60_min": sum(1 for r in stops if r.get("minutes_in_trade") is not None
+                                                     and r["minutes_in_trade"] <= QUICK_STOP_MINUTES),
+                      "closed_at_end": sum(1 for r in done if r["outcome"] == "closed_at_end"),
+                      "same_sector": same_sector},
+        "known_limitations": list(KNOWN_LIMITATIONS),
+    }
+
+
 def build_day_facts(raw: dict, info: dict | None = None) -> dict:
     """Raw rows in, the finished fact bundle out. `info` is symbol -> {'company', 'sector'} (see load_company_info)."""
     info = info or {}
@@ -159,7 +206,7 @@ def build_day_facts(raw: dict, info: dict | None = None) -> dict:
     facts = {"kind": "daily", "market_date": raw["market_date"], "weekday": day.strftime("%A"),
              "day_status": None, "note": None, "pnl_basis": PNL_BASIS,
              "run": None, "money": None, "trades": [], "others": [], "report_card": {},
-             "counts": {"trades": 0, "winners": 0, "losers": 0, "flat": 0},
+             "counts": {"trades": 0, "winners": 0, "losers": 0, "flat": 0}, "app_behaviour": None,
              "not_recorded": list(NOT_RECORDED)}
 
     # --- what kind of day was it?
@@ -216,6 +263,7 @@ def build_day_facts(raw: dict, info: dict | None = None) -> dict:
                 "result": None if r is None else {
                     "outcome": r["outcome"], "exit_price": _num(r.get("exit_price")),
                     "exit_time_ist": exit_time.strftime("%H:%M") if exit_time else None, "pnl": pnl,
+                    "minutes_in_trade": round((exit_time - started).total_seconds() / 60) if (exit_time and started) else None,
                     "r_multiple": _num(pnl / max_loss) if (pnl is not None and max_loss) else None}})
             facts["trades"].append(stock)
         else:
@@ -237,6 +285,7 @@ def build_day_facts(raw: dict, info: dict | None = None) -> dict:
     pnls = [t["result"]["pnl"] for t in facts["trades"] if t["result"] and t["result"]["pnl"] is not None]
     facts["counts"] = {"trades": len(facts["trades"]), "winners": sum(1 for x in pnls if x > 0),
                        "losers": sum(1 for x in pnls if x < 0), "flat": sum(1 for x in pnls if x == 0)}
+    facts["app_behaviour"] = _behaviour(raw, facts, verdicts)
     if equity is None:
         facts["day_status"] = "not_settled_yet"           # the run exists but settlement has not run
     else:
@@ -276,6 +325,15 @@ def summary_text(facts: dict) -> str:
         outcome = "no result yet" if r is None else f"{r['outcome']} at {r['exit_price']} ({r['exit_time_ist']} IST), pnl {r['pnl']:+,.2f}, {r['r_multiple']}R"
         lines.append(f"  {t['symbol']} [{t['sector']}]: {outcome}; analyst {t['analyst']['event_type']}/{t['analyst']['event_status']}, "
                      f"{len(t['cited_headlines'])} cited headline(s)")
+    b = facts.get("app_behaviour")
+    if b:
+        lines.append(f"app: {b['candidates']['without_headlines']} of {b['candidates']['total']} candidates had no headlines; analyst judged {b['analyst']['judged']} "
+                     f"({b['analyst']['strong']} strong, {b['analyst']['overruled_by_code']} overruled by code); planner accepted {b['planner']['accepted']}, "
+                     f"rejected {b['planner']['rejected']}, skipped {b['planner']['skipped']}, nudged {b['planner']['nudged']}")
+        p = b["positions"]
+        shared = "; ".join(k + " " + "+".join(x["symbol"] for x in v) for k, v in p["same_sector"].items()) or "none"
+        lines.append(f"app: stops {p['stop_hits']} ({p['stop_hits_within_60_min']} within 60 min), targets {p['target_hits']}, "
+                     f"3:15 closes {p['closed_at_end']}; same-sector trades: {shared}")
     lines.append(f"others: {len(facts['others'])} stocks")
     for group, g in facts["report_card"].items():
         lines.append(f"  report card - {g['label']}: {g['stocks']} stock(s), {g['graded']} graded, "

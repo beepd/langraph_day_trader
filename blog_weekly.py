@@ -29,7 +29,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
 
-from blog_facts import GROUP_LABELS, NOT_RECORDED, PNL_BASIS, _num, collect_day_facts, load_company_info
+from blog_facts import GROUP_LABELS, KNOWN_LIMITATIONS, NOT_RECORDED, PNL_BASIS, _num, collect_day_facts, load_company_info
 
 IST = timezone(timedelta(hours=5, minutes=30))
 log = logging.getLogger("blog_weekly")
@@ -152,6 +152,32 @@ def _period(bundles: list) -> dict:
             "setups": _setups(records), "report_card": _report_card(bundles)}
 
 
+def _behaviour(week: list):
+    """How the APP behaved over the week: the daily 'app_behaviour' counts added up (None if no day ran)."""
+    days = [b for b in week if b.get("app_behaviour")]
+    if not days:
+        return None
+    total = lambda *path: sum(_dig(b["app_behaviour"], path) for b in days)
+    return {
+        "days_covered": len(days),
+        "analyst_mode_by_day": {b["market_date"]: b["app_behaviour"]["analyst"]["mode"] for b in days},
+        "candidates": {"total": total("candidates", "total"), "without_headlines": total("candidates", "without_headlines")},
+        "analyst": {k: total("analyst", k) for k in ("judged", "strong", "on_watchlist", "overruled_by_code", "strong_but_dropped")},
+        "planner": {**{k: total("planner", k) for k in ("accepted", "rejected", "skipped", "nudged")},
+                    "rejected_reasons": [{"date": b["market_date"], **r} for b in days for r in b["app_behaviour"]["planner"]["rejected_reasons"]]},
+        "positions": {**{k: total("positions", k) for k in ("target_hits", "stop_hits", "stop_hits_within_60_min", "closed_at_end")},
+                      "same_sector_days": [{"date": b["market_date"], "sector": sector, "trades": rows}
+                                           for b in days for sector, rows in b["app_behaviour"]["positions"]["same_sector"].items()]},
+        "known_limitations": list(KNOWN_LIMITATIONS),
+    }
+
+
+def _dig(data: dict, path: tuple):
+    for key in path:
+        data = data[key]
+    return data
+
+
 def _day_row(b: dict) -> dict:
     m, c = b["money"], b["counts"]
     return {"date": b["market_date"], "weekday": b["weekday"], "status": b["day_status"], "note": b["note"],
@@ -202,7 +228,7 @@ def build_week_facts(days: list, post_date: date, history: list, today: date) ->
             "last_session": session_days[-1] if session_days else None,
             "pnl_basis": PNL_BASIS, "definitions": DEFINITIONS,
             "days": [_day_row(b) for b in week],
-            "week": _period(week), "cumulative": _period(everything),
+            "week": _period(week), "cumulative": _period(everything), "app_behaviour": _behaviour(week),
             "warnings": warnings, "complete": not warnings,
             "not_recorded": list(NOT_RECORDED)}
 
@@ -254,6 +280,16 @@ def summary_text(facts: dict) -> str:
             lines.append(f"  setup {s['setup']}: {s['trades']} trade(s), win rate {s['win_rate_pct']}%, pnl {s['net_pnl_gross']:+,.2f}")
         for g, row in p["report_card"].items():
             lines.append(f"  report card - {g}: {row['stocks']} stock(s), avg to close {row['avg_return_to_close_pct']}%, what-if {row['avg_whatif_trade_pct']}%")
+    a = facts.get("app_behaviour")
+    if a:
+        lines.append("APP BEHAVIOUR (week):")
+        lines.append(f"  analyst modes: {sorted(set(a['analyst_mode_by_day'].values()))}; {a['candidates']['without_headlines']} of {a['candidates']['total']} candidates had no headlines; "
+                     f"judged {a['analyst']['judged']}, strong {a['analyst']['strong']}, overruled by code {a['analyst']['overruled_by_code']}, strong but dropped {a['analyst']['strong_but_dropped']}")
+        lines.append(f"  planner: accepted {a['planner']['accepted']}, rejected {a['planner']['rejected']}, skipped {a['planner']['skipped']}, nudged {a['planner']['nudged']}")
+        p = a["positions"]
+        lines.append(f"  stops {p['stop_hits']} ({p['stop_hits_within_60_min']} within 60 min), targets {p['target_hits']}, 3:15 closes {p['closed_at_end']}")
+        for d in p["same_sector_days"]:
+            lines.append(f"  same sector on {d['date']}: {d['sector']} " + ", ".join(f"{t['symbol']} {t['outcome']}" for t in d["trades"]))
     return "\n".join(lines)
 
 

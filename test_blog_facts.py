@@ -76,8 +76,10 @@ def trading_day_db():
              "gemini_reason": "stop below the day's low", "rejection_reason": None},
             {"id": 2, "run_id": 7, "symbol": "BBB", "status": "accepted", "entry": 500.0, "stop": 495.0,
              "target": 508.0, "shares": 40, "cost": 20000, "max_loss": 200.0, "max_gain": 320.0,
-             "gemini_reason": "tight stop", "rejection_reason": None},
-            {"id": 3, "run_id": 7, "symbol": "FFF", "status": "skipped", "rejection_reason": "only 3 positions a day"}],
+             "gemini_reason": "[adjusted by the rulebook: target moved to the limit] tight stop", "rejection_reason": None},
+            {"id": 3, "run_id": 7, "symbol": "FFF", "status": "skipped", "rejection_reason": "only 3 positions a day"},
+            {"id": 4, "run_id": 7, "symbol": "EEE", "status": "rejected", "rejection_reason": "stop is too close " + "x" * 200,
+             "gemini_reason": "[adjusted by the rulebook: stop moved] tried"}],
         "trade_results": [
             {"plan_id": 1, "outcome": "target_hit", "exit_price": 337.4, "exit_time": "2026-10-09T05:35:00+00:00", "pnl": 576.0},
             {"plan_id": 2, "outcome": "stop_hit", "exit_price": 495.0, "exit_time": "2026-10-09T04:55:00+00:00", "pnl": -200.0}],
@@ -189,8 +191,34 @@ f = facts_for(db)
 check("a bought stock without a result yet: result is None, counted once", f["trades"][1]["result"] is None
       and f["counts"] == {"trades": 2, "winners": 1, "losers": 0, "flat": 0})
 
-# ---------------------------------------------------------------- 5. the printed summary
-print("5. The short summary")
+# ---------------------------------------------------------------- 5. how the app behaved
+print("5. App behaviour")
+ab = facts_for(trading_day_db())["app_behaviour"]
+check("candidates: 6 in total, 5 without a single headline", ab["candidates"] == {"total": 6, "without_headlines": 5})
+check("analyst: 6 judged, 4 strong, 3 on the watchlist, 0 overruled, 1 strong but dropped",
+      ab["analyst"] == {"mode": "checklist", "judged": 6, "strong": 4, "on_watchlist": 3, "overruled_by_code": 0, "strong_but_dropped": 1})
+check("planner: 2 accepted, 1 rejected, 1 skipped, 2 nudged (one accepted, one rejected)",
+      (ab["planner"]["accepted"], ab["planner"]["rejected"], ab["planner"]["skipped"], ab["planner"]["nudged"]) == (2, 1, 1, 2))
+check("a rejected plan keeps its symbol and a reason cut to 140 characters", ab["planner"]["rejected_reasons"][0]["symbol"] == "EEE"
+      and len(ab["planner"]["rejected_reasons"][0]["reason"]) == 140)
+check("positions: 1 target, 1 stop (hit after 50 minutes, so a quick stop-out), no 3:15 close, no shared sector",
+      ab["positions"] == {"target_hits": 1, "stop_hits": 1, "stop_hits_within_60_min": 1, "closed_at_end": 0, "same_sector": {}})
+trades = {t["symbol"]: t for t in facts_for(trading_day_db())["trades"]}
+check("minutes in trade: 90 for the target trade, 50 for the stop trade", trades["AAA"]["result"]["minutes_in_trade"] == 90
+      and trades["BBB"]["result"]["minutes_in_trade"] == 50)
+check("the known limitations travel with the bundle", len(ab["known_limitations"]) >= 5 and any("headline titles" in x for x in ab["known_limitations"]))
+shared = dict(INFO, BBB={"company": "Beta Ltd.", "sector": "Information Technology"})
+same = bf.collect_day_facts(date.fromisoformat(DAY), client=Fake(trading_day_db()), info=shared)["app_behaviour"]["positions"]["same_sector"]
+check("two trades in one sector are reported with their outcomes", same == {"Information Technology": [
+      {"symbol": "AAA", "outcome": "target_hit", "pnl": 576.0}, {"symbol": "BBB", "outcome": "stop_hit", "pnl": -200.0}]})
+slow = trading_day_db(); slow["trade_results"][1]["exit_time"] = "2026-10-09T06:00:00+00:00"            # 115 minutes after the start
+check("a stop hit after 60 minutes is not a quick stop-out", facts_for(slow)["app_behaviour"]["positions"]["stop_hits_within_60_min"] == 0)
+check("skipped, failed and no-run days have no behaviour block", facts_for({"runs": [{"id": 3, "market_date": DAY, "status": "skipped"}]})["app_behaviour"] is None
+      and facts_for({})["app_behaviour"] is None)
+check("the summary mentions the app lines", "app: 5 of 6 candidates had no headlines" in bf.summary_text(facts_for(trading_day_db())))
+
+# ---------------------------------------------------------------- 6. the printed summary
+print("6. The short summary")
 text = bf.summary_text(facts_for(trading_day_db()))
 check("summary shows status, money and both trades", "traded" in text and "+376.00" in text and "AAA" in text
       and "target_hit at 337.4 (11:05 IST)" in text and "-1.0R" in text)
@@ -203,8 +231,8 @@ for name, database in (("skipped", {"runs": [{"id": 3, "market_date": DAY, "stat
         ok = False; print("      ", name, error)
     check(f"summary works for a {name} day", ok)
 
-# ---------------------------------------------------------------- 6. the real Nifty file loads
-print("6. The Nifty file")
+# ---------------------------------------------------------------- 7. the real Nifty file loads
+print("7. The Nifty file")
 info = bf.load_company_info("nifty100.csv")
 check("nifty100.csv gives company and sector", len(info) >= 90 and info["ABB"] == {"company": "ABB India Ltd.", "sector": "Capital Goods"})
 
