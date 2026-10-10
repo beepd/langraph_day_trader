@@ -32,3 +32,5 @@ htmlcov/
 .DS_Store
 Thumbs.db
 experiment_articles_results.csv
+
+client_secret*.json

@@ -121,6 +121,11 @@ create table blog_posts (
     passed_checks  boolean not null default false,   -- did the draft pass every automatic check?
     problems       jsonb not null default '[]'::jsonb,
     tries          int,
+    blogger_post_id    text,                         -- Blogger's id for the post (set when the draft is created there)
+    blogger_url        text,
+    blogger_status     text,                         -- 'DRAFT' or 'LIVE', as last seen on Blogger
+    sent_to_blogger_at timestamptz,
+    published_at       timestamptz,
     facts_used     jsonb,                            -- the exact facts the LLM was given (for audit)
     published      boolean not null default false,
     created_at     timestamptz not null default now()

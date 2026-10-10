@@ -152,11 +152,28 @@ def gave_up(job: str, attempts: int, outcome: str) -> str:
     return f"❌ <b>{esc(job)}</b> gave up after {attempts} attempt(s): {esc(outcome)}. See the log files."
 
 
-def blog_draft(kind: str, market_date: str, title: str, passed: bool, problems: list, replaced: bool = False) -> str:
+def blog_draft(kind: str, market_date: str, title: str, passed: bool, problems: list, replaced: bool = False,
+               edit_url: str = None, meta: str = None, blogger_error: str = None) -> str:
     head = f"📝 <b>Blog draft {'replaced' if replaced else 'saved'}</b> ({esc(kind)}, {esc(market_date)}, not published)\n{esc(title)}\n"
     if passed:
-        return head + "✅ Passed every automatic check. Read it, then publish."
-    return head + "⚠️ NEEDS A CLOSE LOOK:\n" + "\n".join(f"• {esc(p)}" for p in problems[:5])
+        body = "✅ Passed every automatic check."
+    else:
+        body = "⚠️ NEEDS A CLOSE LOOK:\n" + "\n".join(f"• {esc(p)}" for p in problems[:5])
+    out = head + body
+    if edit_url:
+        out += f"\n\nOpen the Blogger draft, check it, then press Publish:\n{esc(edit_url)}"
+    if meta:
+        out += f"\n\nSearch description (paste in Blogger post settings):\n<code>{esc(meta)}</code>"
+    if blogger_error:
+        out += f"\n\n⚠️ Could not create the Blogger draft: {esc(blogger_error)}"
+    return out
+
+
+def blog_sent_late(kind: str, market_date: str, edit_url: str, meta: str = None) -> str:
+    out = f"📝 <b>Blogger draft created</b> ({esc(kind)}, {esc(market_date)}): the post was saved earlier.\n{esc(edit_url)}"
+    if meta:
+        out += f"\n\nSearch description:\n<code>{esc(meta)}</code>"
+    return out
 
 
 def blog_nothing(kind: str, market_date: str, reason: str) -> str:
