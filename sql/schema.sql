@@ -115,8 +115,12 @@ create table blog_posts (
     market_date    date not null unique,
     run_id         bigint references runs (id) on delete set null,
     title          text not null,
+    meta_description text,                           -- the search-result description
     body_markdown  text not null,
     model_name     text,
+    passed_checks  boolean not null default false,   -- did the draft pass every automatic check?
+    problems       jsonb not null default '[]'::jsonb,
+    tries          int,
     facts_used     jsonb,                            -- the exact facts the LLM was given (for audit)
     published      boolean not null default false,
     created_at     timestamptz not null default now()

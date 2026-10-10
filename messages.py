@@ -150,3 +150,14 @@ def crash(job: str, error) -> str:
 
 def gave_up(job: str, attempts: int, outcome: str) -> str:
     return f"❌ <b>{esc(job)}</b> gave up after {attempts} attempt(s): {esc(outcome)}. See the log files."
+
+
+def blog_draft(kind: str, market_date: str, title: str, passed: bool, problems: list, replaced: bool = False) -> str:
+    head = f"📝 <b>Blog draft {'replaced' if replaced else 'saved'}</b> ({esc(kind)}, {esc(market_date)}, not published)\n{esc(title)}\n"
+    if passed:
+        return head + "✅ Passed every automatic check. Read it, then publish."
+    return head + "⚠️ NEEDS A CLOSE LOOK:\n" + "\n".join(f"• {esc(p)}" for p in problems[:5])
+
+
+def blog_nothing(kind: str, market_date: str, reason: str) -> str:
+    return f"📝 No {esc(kind)} blog post for {esc(market_date)}: {esc(reason)}"

@@ -1,18 +1,19 @@
 """
-Scheduler: runs the morning trading job and the end-of-day settlement job on every weekday (India time).
+Scheduler: runs the morning trading job, the end-of-day settlement job and the blog-draft job on every weekday (India time).
 
     python scheduler.py                 run forever (this is what you deploy)
     python scheduler.py --dry-run       print the next few run times and exit
     python scheduler.py --now morning   run the morning job once, right now, then exit
     python scheduler.py --now settle    run the settlement job once, right now, then exit
+    python scheduler.py --now blog      run the blog-draft job once, right now, then exit
 
 It starts each job as a separate program (morning_run.py and settle_day.py), so a crash in a job can never stop
 the scheduler, and neither job needs to know anything about scheduling. Weekends are skipped here; market
 holidays are handled by the jobs themselves (the morning job's preflight stops, settlement finds no run).
 
 Settings (all optional, in .env or the environment):
-    MORNING_TIME=09:35   SETTLE_TIME=15:40   (India time, 24-hour clock)
-    MORNING_SCRIPT=morning_run.py   SETTLE_SCRIPT=settle_day.py
+    MORNING_TIME=09:35   SETTLE_TIME=15:40   BLOG_TIME=16:10   (India time, 24-hour clock)
+    MORNING_SCRIPT=morning_run.py   SETTLE_SCRIPT=settle_day.py   BLOG_SCRIPT=blog_job.py
 """
 import argparse
 import logging
@@ -55,6 +56,8 @@ def load_jobs() -> list[Job]:
             timeout_minutes=20, attempts=2, retry_wait_minutes=5),
         Job("settle", os.getenv("SETTLE_SCRIPT", "settle_day.py"), parse_clock(os.getenv("SETTLE_TIME", "15:40")),
             timeout_minutes=15, attempts=3, retry_wait_minutes=10),     # safe to repeat: settlement skips finished work
+        Job("blog", os.getenv("BLOG_SCRIPT", "blog_job.py"), parse_clock(os.getenv("BLOG_TIME", "16:10")),
+            timeout_minutes=10, attempts=3, retry_wait_minutes=10),     # safe to repeat: a saved draft is never rewritten
     ]
 
 
@@ -125,7 +128,7 @@ def run_forever(jobs: list[Job]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Runs the trading jobs on schedule.")
-    parser.add_argument("--now", choices=["morning", "settle"], help="run one job immediately and exit")
+    parser.add_argument("--now", choices=["morning", "settle", "blog"], help="run one job immediately and exit")
     parser.add_argument("--dry-run", action="store_true", help="print the next run times and exit")
     args = parser.parse_args()
 
